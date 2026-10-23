@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/babisque/PhotonForge"
+
+[workspace.dependencies]
+# Internal crates
+pf-core = { path = "crates/pf-core" }
+pf-io = { path = "crates/pf-io" }
+pf-gcode = { path = "crates/pf-gcode" }
+pf-device = { path = "crates/pf-device" }
+
+# External crates
+thiserror = "2.0"
+anyhow = "1.0"
+eframe = "0.37"
+egui = "0.37"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Allowed in tests via clippy.toml.
+unwrap_used = "deny"
+expect_used = "deny"
