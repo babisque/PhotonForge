@@ -9,6 +9,7 @@ pub mod emit;
 pub mod estimate;
 pub mod options;
 pub mod order;
+pub mod preview;
 pub mod toolpath;
 pub mod validate;
 
@@ -19,6 +20,7 @@ pub use emit::{emit, format_coord};
 pub use estimate::{JobEstimate, estimate};
 pub use options::{DEFAULT_FLATTEN_TOLERANCE, JobOptions, JobOrigin};
 pub use order::order_toolpaths;
+pub use preview::{JobPreview, preview};
 pub use toolpath::{Toolpath, plan_toolpaths};
 pub use validate::{validate, validate_template};
 
@@ -56,7 +58,7 @@ pub fn generate(
     profile: &MachineProfile,
     options: &JobOptions,
 ) -> Result<String, GcodeError> {
-    let toolpaths = prepare(doc, profile, options)?;
+    let toolpaths = prepare_job(doc, profile, options)?;
     Ok(emit(&toolpaths, doc, profile, options))
 }
 
@@ -66,12 +68,13 @@ pub fn estimate_job(
     profile: &MachineProfile,
     options: &JobOptions,
 ) -> Result<JobEstimate, GcodeError> {
-    let toolpaths = prepare(doc, profile, options)?;
+    let toolpaths = prepare_job(doc, profile, options)?;
     Ok(estimate(&toolpaths, profile))
 }
 
-/// Toolpaths in machine coordinates and cut order, validated.
-fn prepare(
+/// Toolpaths in machine coordinates and cut order, validated: exactly what
+/// `generate` writes. Use it to preview a job.
+pub fn prepare_job(
     doc: &Document,
     profile: &MachineProfile,
     options: &JobOptions,
@@ -265,6 +268,24 @@ mod tests {
                 &options
             ),
             Err(GcodeError::Geometry(GeometryError::InvalidTolerance(-1.0)))
+        );
+    }
+
+    #[test]
+    fn preview_of_prepared_job_matches_estimate_job() {
+        let doc = doc_with_rect(10.0, 10.0);
+        let profile = MachineProfile::default();
+        let options = JobOptions::default();
+        let toolpaths = prepare_job(&doc, &profile, &options).unwrap();
+        let result = preview(&toolpaths, &profile);
+        assert_eq!(
+            result.estimate,
+            estimate_job(&doc, &profile, &options).unwrap()
+        );
+        assert_eq!(result.cuts.len(), 1);
+        assert_eq!(
+            result.travels,
+            vec![(Point::ORIGIN, Point::new(10.0, 10.0))]
         );
     }
 

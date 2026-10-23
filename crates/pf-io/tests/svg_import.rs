@@ -290,3 +290,20 @@ fn unsupported_content_is_reported_never_silently_dropped() {
         ]
     );
 }
+
+#[test]
+fn perf_fixture_has_ten_thousand_segments_inside_the_default_work_area() {
+    let svg = import("perf_10k.svg");
+    let segments: usize = svg
+        .document
+        .shapes()
+        .iter()
+        .flat_map(|s| s.to_path().subpaths().to_vec())
+        .map(|sub| sub.segments().len())
+        .sum();
+    assert_eq!(svg.document.shapes().len(), 100);
+    assert_eq!(segments, 10_000);
+    assert!(svg.warnings.is_empty());
+    let bounds = svg.document.bounds().unwrap();
+    assert!(rect(0.0, 0.0, 300.0, 200.0).contains_rect(&bounds));
+}

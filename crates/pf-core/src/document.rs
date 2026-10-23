@@ -170,6 +170,47 @@ impl Document {
             .reduce(|a, b| a.union(&b))
     }
 
+    /// The ID the next `add_layer` will issue.
+    pub(crate) fn next_layer_id(&self) -> u32 {
+        self.next_layer_id
+    }
+
+    /// The ID the next `add_shape` will issue.
+    pub(crate) fn next_shape_id(&self) -> u64 {
+        self.next_shape_id
+    }
+
+    /// Restores a layer with its existing ID. The caller guarantees the ID
+    /// is not in use and `index <= layers.len()`. The ID counter only moves
+    /// forward, so restored IDs are never issued again.
+    pub(crate) fn insert_layer(&mut self, index: usize, layer: Layer) {
+        self.next_layer_id = self.next_layer_id.max(layer.id.0.saturating_add(1));
+        self.layers.insert(index, layer);
+    }
+
+    /// Restores a shape with its existing ID. The caller guarantees the ID
+    /// is not in use, its layer exists and `index <= shapes.len()`.
+    pub(crate) fn insert_shape(&mut self, index: usize, shape: Shape) {
+        self.next_shape_id = self.next_shape_id.max(shape.id.0.saturating_add(1));
+        self.shapes.insert(index, shape);
+    }
+
+    /// The caller guarantees `index < layers.len()` and the layer is unused.
+    pub(crate) fn remove_layer_at(&mut self, index: usize) -> Layer {
+        self.layers.remove(index)
+    }
+
+    /// Direct access for history edits. The caller must keep `id` unchanged
+    /// and only assign layers that exist.
+    pub(crate) fn shape_at_mut(&mut self, index: usize) -> Option<&mut Shape> {
+        self.shapes.get_mut(index)
+    }
+
+    /// The caller guarantees `index < shapes.len()`.
+    pub(crate) fn remove_shape_at(&mut self, index: usize) -> Shape {
+        self.shapes.remove(index)
+    }
+
     fn require_layer(&self, id: LayerId) -> Result<(), DocumentError> {
         match self.layer(id) {
             Some(_) => Ok(()),

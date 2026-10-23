@@ -1,10 +1,16 @@
 //! PhotonForge desktop application: a thin eframe GUI over the library crates.
 
+mod actions;
 mod app;
+mod display;
+mod panels;
+mod state;
 
 fn main() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("PhotonForge"),
+        viewport: egui::ViewportBuilder::default()
+            .with_title("PhotonForge")
+            .with_inner_size([1280.0, 800.0]),
         ..Default::default()
     };
     eframe::run_native(

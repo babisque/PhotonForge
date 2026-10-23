@@ -6,12 +6,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+pf-core = { workspace = true }
 pf-io = { workspace = true }
 pf-gcode = { workspace = true }
-pf-device = { workspace = true }
 anyhow = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
+rfd = { workspace = true }
 
 [lints]
 workspace = true

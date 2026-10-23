@@ -1,8 +1,7 @@
 # Project Spec: Phase 4: GUI MVP (`pf-app`)
 
 ## 1. Overview and Goal
-* **Purpose:** An offline designer: import SVGs, arrange shapes, set layer parameters,
-  preview toolpaths, and export G-code. No hardware.
+* **Purpose:** An offline designer: import SVGs, arrange shapes, set layer parameters, preview toolpaths, and export G-code. No hardware.
 * **Success Criteria:**
   * **M2:** a user can import an SVG, move/scale/rotate it, edit layer settings, preview, and save G-code entirely from the GUI.
   * Canvas pan/zoom stays at 60 FPS with 10k flattened segments on a mid-range machine.

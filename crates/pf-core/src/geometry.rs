@@ -231,9 +231,36 @@ impl Rect {
         }
     }
 
+    /// Grows every side by `margin` mm. A negative margin shrinks the
+    /// rectangle, but never past its center.
+    pub fn inflate(&self, margin: f64) -> Rect {
+        let c = self.center();
+        Rect {
+            min: Point::new(
+                (self.min.x - margin).min(c.x),
+                (self.min.y - margin).min(c.y),
+            ),
+            max: Point::new(
+                (self.max.x + margin).max(c.x),
+                (self.max.y + margin).max(c.y),
+            ),
+        }
+    }
+
     pub fn approx_eq(&self, other: &Rect, eps: f64) -> bool {
         self.min.approx_eq(other.min, eps) && self.max.approx_eq(other.max, eps)
     }
+}
+
+/// Shortest distance from `p` to the segment `a`–`b`.
+pub fn distance_to_segment(p: Point, a: Point, b: Point) -> f64 {
+    let ab = b - a;
+    let len_sq = ab.dot(ab);
+    if len_sq <= 0.0 {
+        return p.distance(a);
+    }
+    let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
 }
 
 #[cfg(test)]
@@ -313,6 +340,43 @@ mod tests {
         assert!(a.lerp(b, 0.0).approx_eq(a, EPS));
         assert!(a.lerp(b, 1.0).approx_eq(b, EPS));
         assert!(a.lerp(b, 0.5).approx_eq(Point::new(5.0, -2.0), EPS));
+    }
+
+    #[test]
+    fn distance_to_segment_cases() {
+        let a = Point::new(0.0, 0.0);
+        let b = Point::new(10.0, 0.0);
+        // Perpendicular foot inside the segment.
+        assert!(approx_eq(
+            distance_to_segment(Point::new(4.0, 3.0), a, b),
+            3.0,
+            EPS
+        ));
+        // Beyond either end: distance to the nearest endpoint.
+        assert!(approx_eq(
+            distance_to_segment(Point::new(13.0, 4.0), a, b),
+            5.0,
+            EPS
+        ));
+        assert!(approx_eq(
+            distance_to_segment(Point::new(-3.0, -4.0), a, b),
+            5.0,
+            EPS
+        ));
+        // Degenerate segment.
+        assert!(approx_eq(
+            distance_to_segment(Point::new(3.0, 4.0), a, a),
+            5.0,
+            EPS
+        ));
+    }
+
+    #[test]
+    fn inflate_grows_and_shrinks_without_inverting() {
+        let r = rect(0.0, 0.0, 10.0, 4.0);
+        assert!(r.inflate(1.0).approx_eq(&rect(-1.0, -1.0, 11.0, 5.0), EPS));
+        assert!(r.inflate(-1.0).approx_eq(&rect(1.0, 1.0, 9.0, 3.0), EPS));
+        assert!(r.inflate(-3.0).approx_eq(&rect(3.0, 2.0, 7.0, 2.0), EPS));
     }
 
     #[test]
