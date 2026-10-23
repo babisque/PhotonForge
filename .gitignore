@@ -1,0 +1,41 @@
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock is committed: the workspace ships a binary (pf-app).
+
+# Snapshot test leftovers (insta)
+*.snap.new
+*.pending-snap
+
+# Profiling / coverage
+*.profraw
+*.profdata
+/coverage/
+lcov.info
+flamegraph.svg
+perf.data*
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment / secrets
+.env
+.env.*
+
+# Claude Code: keep shared settings, ignore personal ones
+.claude/settings.local.json
+
+# Local test output (generated G-code, scratch files)
+/scratch/
+*.local.gcode
