@@ -7,6 +7,11 @@ repository.workspace = true
 
 [dependencies]
 pf-core = { workspace = true }
+thiserror = { workspace = true }
+usvg = { workspace = true }
+
+[dev-dependencies]
+pf-gcode = { workspace = true }
 
 [lints]
 workspace = true

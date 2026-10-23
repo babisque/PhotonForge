@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="100mm" height="100mm" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="grad">
+      <stop offset="0" stop-color="#ff0000"/>
+      <stop offset="1" stop-color="#0000ff"/>
+    </linearGradient>
+    <clipPath id="clip">
+      <rect x="0" y="0" width="50" height="50"/>
+    </clipPath>
+    <mask id="fade">
+      <rect x="0" y="0" width="100" height="100" fill="#ffffff"/>
+    </mask>
+  </defs>
+  <text id="label" x="10" y="10">Hello</text>
+  <image id="photo" x="0" y="0" width="20" height="20" xlink:href="photo.png"/>
+  <rect id="filled" x="10" y="20" width="10" height="10" fill="#0000ff"/>
+  <rect id="gradient" x="30" y="20" width="10" height="10" fill="none" stroke="url(#grad)"/>
+  <g id="clipped" clip-path="url(#clip)">
+    <rect id="inside_clip" x="10" y="40" width="10" height="10" fill="none" stroke="#000000"/>
+  </g>
+  <g id="masked" mask="url(#fade)">
+    <rect id="inside_mask" x="30" y="40" width="10" height="10" fill="none" stroke="#000000"/>
+  </g>
+  <rect id="hidden" x="50" y="40" width="10" height="10" fill="none" stroke="#000000" visibility="hidden"/>
+  <rect id="ok" x="70" y="40" width="10" height="10" fill="none" stroke="#000000"/>
+</svg>

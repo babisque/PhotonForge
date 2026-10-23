@@ -20,6 +20,7 @@ thiserror = "2.0"
 anyhow = "1.0"
 eframe = "0.37"
 egui = "0.37"
+usvg = { version = "0.48", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

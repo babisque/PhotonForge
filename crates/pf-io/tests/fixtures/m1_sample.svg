@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="100mm"
+   height="50mm"
+   viewBox="0 0 100 50"
+   version="1.1"
+   id="svg1"
+   inkscape:version="1.3.2 (091e20e, 2023-11-25)"
+   sodipodi:docname="m1_sample.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     inkscape:document-units="mm" />
+  <defs
+     id="defs1" />
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1">
+    <rect
+       style="fill:none;stroke:#ff0000;stroke-width:0.1"
+       id="square"
+       width="40"
+       height="40"
+       x="5"
+       y="5" />
+    <circle
+       style="fill:none;stroke:#0000ff;stroke-width:0.1"
+       id="circle"
+       cx="70"
+       cy="25"
+       r="15" />
+    <g
+       id="tilted"
+       transform="translate(88,38) rotate(15)">
+      <path
+         style="fill:none;stroke:#ff0000;stroke-width:0.1"
+         id="triangle"
+         d="M 0,0 H 10 L 5,8 Z" />
+    </g>
+    <path
+       style="fill:none;stroke:#0000ff;stroke-width:0.1"
+       id="arch"
+       d="m 50,45 a 5,5 0 0 1 10,0" />
+  </g>
+</svg>

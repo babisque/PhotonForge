@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="100mm" height="100mm" viewBox="0 0 100 100">
+  <defs>
+    <rect id="base" x="0" y="0" width="10" height="5" fill="none" stroke="#000000"/>
+  </defs>
+  <g transform="translate(30,10)">
+    <g transform="rotate(90)">
+      <g transform="scale(2)">
+        <rect id="nested" x="0" y="0" width="5" height="10" fill="none" stroke="#000000"/>
+      </g>
+    </g>
+  </g>
+  <use id="instance" xlink:href="#base" transform="matrix(1,0,0,1,50,40)"/>
+</svg>

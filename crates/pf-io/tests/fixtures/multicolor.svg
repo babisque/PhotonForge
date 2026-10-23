@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100">
+  <style>
+    .green { stroke: #00a000; fill: none; }
+  </style>
+  <rect id="red1" x="5" y="5" width="10" height="10" fill="none" stroke="#ff0000"/>
+  <circle id="blue1" cx="30" cy="10" r="5" fill="none" stroke="#0000FF"/>
+  <g stroke="#FF0000" fill="none">
+    <path id="red2" d="M 40 5 L 50 15"/>
+  </g>
+  <rect id="green1" class="green" x="55" y="5" width="10" height="10"/>
+  <line id="red3" x1="70" y1="5" x2="80" y2="15" style="stroke:rgb(255,0,0)"/>
+  <polyline id="orange1" points="5,30 15,40 25,30" fill="none" stroke="#f80"/>
+  <rect id="nearred1" x="30" y="30" width="10" height="10" fill="none" stroke="#fe0000"/>
+</svg>

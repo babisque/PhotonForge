@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100">
+  <g fill="none" stroke="#000000">
+    <!-- Relative h/v closing back to the start: a 20 x 20 square. -->
+    <path id="relative_square" d="m 10 10 h 20 v 20 h -20 z"/>
+    <!-- The same S-curve twice: with the 's' shorthand and spelled out with 'C'. -->
+    <path id="smooth" d="M 10 50 c 5 -10 15 -10 20 0 s 15 10 20 0"/>
+    <path id="explicit" d="M 10 50 C 15 40 25 40 30 50 C 35 60 45 60 50 50"/>
+    <!-- Upper half circle, centre (80, 50), radius 10. -->
+    <path id="arc" d="M 70 50 A 10 10 0 0 1 90 50"/>
+    <!-- Quadratic plus its 'T' reflection. -->
+    <path id="quad" d="M 10 80 Q 20 70 30 80 T 50 80"/>
+  </g>
+</svg>

@@ -1,8 +1,7 @@
 # Project Spec: Phase 3: SVG Import and G-code Export (`pf-io`)
 
 ## 1. Overview and Goal
-* **Purpose:** Import SVG files into a `Document` with correct physical dimensions and write
-  generated G-code to disk. This completes the first vertical slice.
+* **Purpose:** Import SVG files into a `Document` with correct physical dimensions and write generated G-code to disk. This completes the first vertical slice.
 * **Success Criteria:**
   * An SVG exported from Inkscape at 100×50 mm imports at 100×50 mm (±0.01 mm).
   * Distinct stroke colors map to distinct layers.
