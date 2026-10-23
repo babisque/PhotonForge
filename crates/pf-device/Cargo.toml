@@ -7,6 +7,8 @@ repository.workspace = true
 
 [dependencies]
 pf-core = { workspace = true }
+serialport = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true

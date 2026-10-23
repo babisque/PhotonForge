@@ -5,7 +5,7 @@ use std::time::Duration;
 use egui::{Key, KeyboardShortcut, Modifiers};
 
 use crate::actions;
-use crate::panels::{canvas, import_warnings, layers, machine, preview};
+use crate::panels::{canvas, connection, console, import_warnings, layers, machine, preview};
 use crate::state::{AppState, SideTab, StatusLevel};
 
 const IMPORT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::I);
@@ -31,12 +31,19 @@ impl Default for PhotonForgeApp {
 impl eframe::App for PhotonForgeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         actions::poll_jobs(&mut self.state);
-        if self.state.job.is_some() {
+        actions::poll_device(&mut self.state);
+        if self.state.job.is_some() || self.state.device.connection.is_some() {
             ui.ctx().request_repaint_after(JOB_POLL);
         }
         handle_shortcuts(ui, &mut self.state);
         egui::Panel::top("menu_bar").show(ui, |ui| show_menu_bar(ui, &mut self.state));
         egui::Panel::bottom("status_bar").show(ui, |ui| show_status_bar(ui, &self.state));
+        if self.state.device.show_console {
+            egui::Panel::bottom("console")
+                .resizable(true)
+                .default_size(180.0)
+                .show(ui, |ui| console::show_console(ui, &mut self.state));
+        }
         egui::Panel::right("side_panel")
             .resizable(true)
             .default_size(300.0)
@@ -92,8 +99,22 @@ fn show_menu_bar(ui: &mut egui::Ui, state: &mut AppState) {
                 state.needs_fit = true;
             }
             ui.checkbox(&mut state.show_frame_time, "Show frame time");
+            ui.checkbox(&mut state.device.show_console, "Console");
         });
     });
+}
+
+/// "GRBL: Idle" while connected, for the status bar.
+fn device_summary(snapshot: &pf_device::DeviceSnapshot) -> Option<String> {
+    use pf_device::LinkState;
+    match &snapshot.link {
+        LinkState::Disconnected => None,
+        LinkState::Opening | LinkState::Identifying => Some(String::from("GRBL: connecting…")),
+        LinkState::Ready { .. } => Some(match &snapshot.status {
+            Some(status) => format!("GRBL: {}", connection::state_name(status.state)),
+            None => String::from("GRBL: connected"),
+        }),
+    }
 }
 
 fn edit_label(verb: &str, step: Option<&str>) -> String {
@@ -158,6 +179,10 @@ fn show_status_bar(ui: &mut egui::Ui, state: &AppState) {
         ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(format!("{:.0}%", state.viewport.zoom() * 100.0));
+            if let Some(device) = device_summary(&state.device.snapshot) {
+                ui.separator();
+                ui.label(device);
+            }
             if let Some(p) = state.cursor_mm {
                 ui.monospace(format!("X {:8.2}  Y {:8.2} mm", p.x, p.y));
             }
@@ -170,12 +195,14 @@ fn show_side_panel(ui: &mut egui::Ui, state: &mut AppState) {
         ui.selectable_value(&mut state.side_tab, SideTab::Layers, "Layers");
         ui.selectable_value(&mut state.side_tab, SideTab::Machine, "Machine");
         ui.selectable_value(&mut state.side_tab, SideTab::Preview, "Preview");
+        ui.selectable_value(&mut state.side_tab, SideTab::Device, "Device");
     });
     ui.separator();
     match state.side_tab {
         SideTab::Layers => layers::show_layers(ui, state),
         SideTab::Machine => machine::show_machine(ui, state),
         SideTab::Preview => preview::show_preview(ui, state),
+        SideTab::Device => connection::show_connection(ui, state),
     }
 }
 
@@ -186,6 +213,25 @@ mod tests {
     #[test]
     fn app_constructs_with_default_state() {
         let _app = PhotonForgeApp::default();
+    }
+
+    #[test]
+    fn device_summary_names_the_state() {
+        use pf_device::{ConnectionState, DeviceEvent, DeviceSnapshot, parse_status};
+        let mut snapshot = DeviceSnapshot::default();
+        assert_eq!(device_summary(&snapshot), None);
+        snapshot.apply(&DeviceEvent::ConnectionChanged(ConnectionState::Opening));
+        assert_eq!(
+            device_summary(&snapshot).as_deref(),
+            Some("GRBL: connecting…")
+        );
+        let report = parse_status("<Hold:1|MPos:0.000,0.000,0.000|FS:0,0>").unwrap();
+        let positions = report.positions(None);
+        snapshot.apply(&DeviceEvent::ConnectionChanged(ConnectionState::Ready {
+            version: "1.1h".into(),
+        }));
+        snapshot.apply(&DeviceEvent::Status { report, positions });
+        assert_eq!(device_summary(&snapshot).as_deref(), Some("GRBL: Hold:1"));
     }
 
     #[test]

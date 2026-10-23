@@ -39,6 +39,8 @@ const GRID_MAJOR: Color32 = Color32::from_gray(200);
 const SELECTION_COLOR: Color32 = Color32::from_rgb(0, 120, 215);
 const CROSSING_COLOR: Color32 = Color32::from_rgb(0, 150, 60);
 const TRAVEL_COLOR: Color32 = Color32::from_gray(140);
+const LASER_HEAD_COLOR: Color32 = Color32::from_rgb(230, 0, 120);
+const LASER_HEAD_PX: f32 = 10.0;
 const OUT_OF_BOUNDS_COLOR: Color32 = Color32::from_rgb(220, 30, 30);
 
 pub fn show_canvas(ui: &mut egui::Ui, state: &mut AppState) {
@@ -83,6 +85,7 @@ pub fn show_canvas(ui: &mut egui::Ui, state: &mut AppState) {
         draw_toolpaths(&painter, state);
     }
     draw_selection_frame(&painter, state, preview);
+    draw_laser_head(&painter, state);
     if let (Interaction::Marquee { start }, Some(end)) = (state.interaction, pointer) {
         draw_marquee(&painter, &state.viewport, start, end);
     }
@@ -441,6 +444,26 @@ fn draw_shapes(painter: &Painter, state: &AppState, screen: Rect, preview: Optio
             }
         }
     }
+}
+
+/// A crosshair where the connected machine's laser head is. Machine
+/// coordinates equal document coordinates (bottom-left origin).
+fn draw_laser_head(painter: &Painter, state: &AppState) {
+    let Some([x, y, _]) = state.device.snapshot.machine_position_mm() else {
+        return;
+    };
+    let center = to_pos(state.viewport.to_screen(Point::new(x, y)));
+    let stroke = Stroke::new(1.5, LASER_HEAD_COLOR);
+    let r = LASER_HEAD_PX;
+    painter.circle_stroke(center, r * 0.6, stroke);
+    painter.line_segment(
+        [center - egui::vec2(r, 0.0), center + egui::vec2(r, 0.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [center - egui::vec2(0.0, r), center + egui::vec2(0.0, r)],
+        stroke,
+    );
 }
 
 /// The planned job over the canvas: cuts in their layer color, travel moves
@@ -818,6 +841,36 @@ mod tests {
         assert_eq!(preview.cuts.len(), 2);
         // Drawing never edits the document.
         assert_eq!(state.history.revision(), revision);
+    }
+
+    #[test]
+    fn the_laser_head_is_drawn_only_when_its_position_is_known() {
+        let ctx = egui::Context::default();
+        let shapes_drawn = |state: &mut AppState| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| show_canvas(ui, state));
+            });
+            // No renderer here to upload font textures to.
+            output.textures_delta.clear();
+            output.shapes.len()
+        };
+        let mut state = AppState::new();
+        let without = shapes_drawn(&mut state);
+        let report = pf_device::parse_status("<Idle|MPos:50.000,40.000,0.000|FS:0,0>").unwrap();
+        let positions = report.positions(None);
+        state
+            .device
+            .snapshot
+            .apply(&pf_device::DeviceEvent::Status { report, positions });
+        // A circle and two lines.
+        assert_eq!(shapes_drawn(&mut state), without + 3);
     }
 
     #[test]

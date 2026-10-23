@@ -8,10 +8,12 @@ use pf_core::{
     Document, Handle, History, LayerId, MachineError, MachineProfile, Origin, Point, Rect, ShapeId,
     Viewport,
 };
+use pf_device::{Connection, DEFAULT_BAUD, DEFAULT_POLL_HZ, DeviceSnapshot, PortInfo};
 use pf_gcode::JobOptions;
 use pf_io::{ImportWarning, IoError, SvgImport};
 
 use crate::display::{DisplayCache, PreviewCache};
+use crate::panels::console::Console;
 
 /// Which editor the right-hand side panel shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -20,6 +22,7 @@ pub enum SideTab {
     Layers,
     Machine,
     Preview,
+    Device,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +100,39 @@ impl ProfileDraft {
     }
 }
 
+/// The GRBL connection and what the device panel shows. Read-only in this
+/// phase: nothing here can move the machine or fire the laser.
+#[derive(Debug)]
+pub struct DeviceUi {
+    pub ports: Vec<PortInfo>,
+    /// The port to connect to; may name a port not in `ports`.
+    pub port: String,
+    pub baud: u32,
+    pub poll_hz: u8,
+    pub dtr: bool,
+    /// Present while connected or connecting. Dropping it closes the port.
+    pub connection: Option<Connection>,
+    pub snapshot: DeviceSnapshot,
+    pub console: Console,
+    pub show_console: bool,
+}
+
+impl Default for DeviceUi {
+    fn default() -> Self {
+        DeviceUi {
+            ports: Vec::new(),
+            port: String::new(),
+            baud: DEFAULT_BAUD,
+            poll_hz: DEFAULT_POLL_HZ,
+            dtr: false,
+            connection: None,
+            snapshot: DeviceSnapshot::default(),
+            console: Console::default(),
+            show_console: false,
+        }
+    }
+}
+
 /// Work running on a background thread so file I/O never blocks a frame.
 #[derive(Debug)]
 pub enum BackgroundJob {
@@ -141,6 +177,7 @@ pub struct AppState {
     pub cursor_mm: Option<Point>,
     pub show_frame_time: bool,
     pub side_tab: SideTab,
+    pub device: DeviceUi,
     pub status: Option<StatusMessage>,
     /// At most one job runs at a time.
     pub job: Option<BackgroundJob>,
@@ -172,6 +209,7 @@ impl AppState {
             cursor_mm: None,
             show_frame_time: false,
             side_tab: SideTab::default(),
+            device: DeviceUi::default(),
             status: None,
             job: None,
             import_report: None,
@@ -204,6 +242,9 @@ mod tests {
         assert!(state.needs_fit);
         assert_eq!(state.profile_draft.build(), Ok(state.profile.clone()));
         assert_eq!(state.side_tab, SideTab::Layers);
+        assert!(state.device.connection.is_none());
+        assert_eq!(state.device.baud, 115_200);
+        assert!(!state.device.dtr);
         assert!(!state.history.can_undo());
         assert_eq!(state.status, None);
         assert!(state.job.is_none());

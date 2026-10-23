@@ -9,6 +9,7 @@ use std::thread;
 use pf_core::{
     Command, Document, LayerId, MachineProfile, Shape, ShapeId, Transform, is_inside_work_area,
 };
+use pf_device::{ConnectOptions, DeviceEvent, ReadOnlyRequest, SerialSettings, list_ports};
 use pf_gcode::JobOptions;
 use pf_io::{IoError, SvgImport, SvgImportOptions, WriteMode};
 
@@ -266,6 +267,99 @@ pub fn delete_selection(state: &mut AppState) {
     }
     let ids = std::mem::take(&mut state.selection);
     apply(state, Command::DeleteShapes(ids));
+}
+
+/// Refreshes the port list and keeps the chosen port, or picks the first.
+pub fn refresh_ports(state: &mut AppState) {
+    match list_ports() {
+        Ok(ports) => {
+            let device = &mut state.device;
+            let known = ports.iter().any(|p| p.name == device.port);
+            if !known && let Some(first) = ports.first() {
+                device.port = first.name.clone();
+            }
+            device.ports = ports;
+        }
+        Err(err) => state.set_status(StatusLevel::Error, err.to_string()),
+    }
+}
+
+/// Opens the chosen port on a background thread. Connecting only reads:
+/// it never moves the machine or turns on the laser.
+pub fn connect_device(state: &mut AppState) {
+    let device = &mut state.device;
+    if device.connection.is_some() || device.port.is_empty() {
+        return;
+    }
+    let options = ConnectOptions {
+        serial: SerialSettings {
+            port: device.port.clone(),
+            baud: device.baud,
+            dtr: device.dtr,
+        },
+        poll_hz: device.poll_hz,
+    };
+    let note = format!(
+        "Connecting to {} at {} baud, DTR {}.",
+        device.port,
+        device.baud,
+        if device.dtr { "on" } else { "off" }
+    );
+    match pf_device::connect(options) {
+        Ok(connection) => {
+            device.connection = Some(connection);
+            device.console.note(note);
+        }
+        Err(err) => state.set_status(StatusLevel::Error, err.to_string()),
+    }
+}
+
+pub fn disconnect_device(state: &mut AppState) {
+    // Dropping the connection stops its thread, which closes the port.
+    if state.device.connection.take().is_some() {
+        handle_device_events(
+            state,
+            vec![DeviceEvent::Disconnected {
+                reason: String::from("Disconnected by the user."),
+            }],
+        );
+    }
+}
+
+pub fn device_request(state: &mut AppState, request: ReadOnlyRequest) {
+    if let Some(connection) = &state.device.connection {
+        connection.request(request);
+    }
+}
+
+/// Picks up what the connection reported since the last frame.
+pub fn poll_device(state: &mut AppState) {
+    let events = match &state.device.connection {
+        Some(connection) => connection.poll_events(),
+        None => return,
+    };
+    handle_device_events(state, events);
+}
+
+fn handle_device_events(state: &mut AppState, events: Vec<DeviceEvent>) {
+    for event in events {
+        state.device.console.record(&event);
+        state.device.snapshot.apply(&event);
+        match &event {
+            DeviceEvent::Disconnected { reason } => {
+                state.device.connection = None;
+                state.set_status(StatusLevel::Warning, reason.clone());
+            }
+            DeviceEvent::ConnectionChanged(pf_device::ConnectionState::Ready { version }) => {
+                state.set_status(StatusLevel::Info, format!("Connected to GRBL {version}"));
+            }
+            DeviceEvent::Alarm(code) => state.set_status(
+                StatusLevel::Error,
+                crate::panels::console::describe_alarm(*code),
+            ),
+            _ => {}
+        }
+    }
 }
 
 /// Replaces the machine profile with the draft if it passes validation;
@@ -693,5 +787,87 @@ mod tests {
         refresh_preview(&mut state);
         assert_eq!(state.preview.result().unwrap().as_ref().unwrap(), &before);
         assert!(state.document.shape(id).is_some());
+    }
+
+    #[test]
+    fn device_events_update_snapshot_console_and_status() {
+        let mut state = AppState::new();
+        handle_device_events(
+            &mut state,
+            vec![
+                DeviceEvent::ConnectionChanged(pf_device::ConnectionState::Opening),
+                DeviceEvent::ConnectionChanged(pf_device::ConnectionState::Ready {
+                    version: "1.1h".into(),
+                }),
+            ],
+        );
+        assert!(state.device.snapshot.is_connected());
+        assert_eq!(
+            state.status.as_ref().unwrap().text,
+            "Connected to GRBL 1.1h"
+        );
+        handle_device_events(&mut state, vec![DeviceEvent::Alarm(1)]);
+        assert_eq!(level(&state), StatusLevel::Error);
+        assert!(
+            state
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .starts_with("ALARM:1 Hard limit")
+        );
+        handle_device_events(
+            &mut state,
+            vec![DeviceEvent::Disconnected {
+                reason: "Connection lost: broken pipe".into(),
+            }],
+        );
+        assert!(!state.device.snapshot.is_connected());
+        assert_eq!(level(&state), StatusLevel::Warning);
+        assert!(state.device.console.visible().count() >= 3);
+    }
+
+    #[test]
+    fn connecting_to_a_missing_port_ends_cleanly() {
+        let mut state = AppState::new();
+        state.device.port = String::from(if cfg!(windows) {
+            "COM250"
+        } else {
+            "/dev/pf-no-such-port"
+        });
+        connect_device(&mut state);
+        assert!(state.device.connection.is_some());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while state.device.connection.is_some() && Instant::now() < deadline {
+            poll_device(&mut state);
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(state.device.connection.is_none());
+        let status = state.status.clone().unwrap();
+        assert_eq!(status.level, StatusLevel::Warning);
+        assert!(status.text.starts_with("could not open"), "{}", status.text);
+        assert!(!state.device.snapshot.is_connected());
+    }
+
+    #[test]
+    fn connect_needs_a_port_and_disconnect_is_harmless_when_idle() {
+        let mut state = AppState::new();
+        connect_device(&mut state);
+        assert!(state.device.connection.is_none());
+        disconnect_device(&mut state);
+        assert_eq!(state.status, None);
+        device_request(&mut state, ReadOnlyRequest::ViewSettings);
+    }
+
+    #[test]
+    fn refreshing_ports_works_without_hardware() {
+        let mut state = AppState::new();
+        refresh_ports(&mut state);
+        let names: Vec<&str> = state.device.ports.iter().map(|p| p.name.as_str()).collect();
+        if let Some(first) = names.first() {
+            assert_eq!(state.device.port, *first);
+        } else {
+            assert!(state.device.port.is_empty());
+        }
     }
 }

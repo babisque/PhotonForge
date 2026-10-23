@@ -22,6 +22,7 @@ eframe = "0.37"
 egui = "0.37"
 usvg = { version = "0.48", default-features = false }
 rfd = "0.17"
+serialport = { version = "4.10", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
