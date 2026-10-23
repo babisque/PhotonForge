@@ -1,8 +1,7 @@
 # Project Spec: Phase 1: Core Geometry (`pf-core`)
 
 ## 1. Overview and Goal
-* **Purpose:** Build the pure in-memory model (geometry, shapes, layers, document, machine
-  profile) that import, G-code generation, and the GUI all depend on.
+* **Purpose:** Build the pure in-memory model (geometry, shapes, layers, document, machine profile) that import, G-code generation, and the GUI all depend on.
 * **Success Criteria:**
   * Shapes can be built, transformed, and flattened to polylines within a given tolerance.
   * A `Document` holds ordered layers and the shapes assigned to them.
