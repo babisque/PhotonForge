@@ -1,0 +1,17 @@
+; PhotonForge job
+G21 G90
+M3 S0
+; Layer Engrave pass 1 of 1
+G0 X10 Y10
+G1 X20 Y10 F2000 S200
+G1 X20 Y20
+G1 X10 Y20
+G1 X10 Y10
+; Layer Cut pass 1 of 1
+M4 S0
+G0 X30 Y10
+G1 X40 Y10 F500 S700
+G1 X40 Y20
+G1 X30 Y20
+G1 X30 Y10
+M5

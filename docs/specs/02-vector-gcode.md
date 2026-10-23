@@ -1,8 +1,7 @@
 # Project Spec: Phase 2: Vector G-code Generation (`pf-gcode`)
 
 ## 1. Overview and Goal
-* **Purpose:** Turn a `Document` plus a `MachineProfile` into GRBL-compatible G-code for
-  line (cut/score) layers, as pure, deterministic functions.
+* **Purpose:** Turn a `Document` plus a `MachineProfile` into GRBL-compatible G-code for line (cut/score) layers, as pure, deterministic functions.
 * **Success Criteria:**
   * `generate()` produces byte-identical output for identical input.
   * The output uses GRBL laser mode correctly (`M4`/`M3`, `S` scaled to `$30`, laser off on `G0`).

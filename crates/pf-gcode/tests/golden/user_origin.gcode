@@ -1,0 +1,10 @@
+; PhotonForge job
+G21 G90
+M4 S0
+; Layer Cut pass 1 of 1
+G0 X10 Y10
+G1 X50 Y10 F1000 S400
+G1 X50 Y50
+G1 X10 Y50
+G1 X10 Y10
+M5
