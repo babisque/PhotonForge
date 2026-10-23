@@ -5,11 +5,33 @@ next one starts. The first runnable vertical slice (SVG in, G-code file out)
 lands before any code talks to hardware.
 
 Legend: ⚠️ = needs explicit approval per `CLAUDE.md` (new dependency, hardware
-motion/laser path, safety limits, or project file format).
+motion/laser path, safety limits, or project file format). ✅ = done.
+🟡 = code done, a manual check is still open. ⬜ = not started.
+
+## Status
+
+Last updated: 2026-10-23.
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 0. Workspace bootstrap | ✅ Done | CI runs fmt, clippy and tests on Windows, Linux and macOS |
+| 1. Core geometry | ✅ Done | |
+| 2. Vector G-code generation | ✅ Done | Golden tests pass. The G-code simulator run is not recorded |
+| 3. SVG import | ✅ Done | **M1 reached:** `m1_sample_svg_to_gcode` |
+| 4. GUI MVP | ✅ Done | **M2 reached** in code: `m2_import_arrange_edit_undo_redo_and_generate`. The manual GUI walkthrough is not recorded |
+| 5. GRBL connection, read-only | 🟡 Code done | The hardware smoke test (5.6) is open: [`docs/hardware/grbl-readonly-smoke.md`](docs/hardware/grbl-readonly-smoke.md) |
+| 6. Machine control and streaming | ⬜ Not started | ⚠️ Hardware gate |
+| 7. Raster engraving | ⬜ Not started | |
+| 8. Vector fill and cut quality | ⬜ Not started | |
+| 9. Project files | ⬜ Not started | ⚠️ Format proposal first |
+| 10. Editing tools and polish | ⬜ Not started | |
+| 11. Release | ⬜ Not started | |
 
 ---
 
-## Phase 0: Workspace bootstrap
+## Phase 0: Workspace bootstrap ✅
+
+**Status:** done.
 
 **Goal:** an empty but green workspace.
 
@@ -20,14 +42,16 @@ motion/laser path, safety limits, or project file format).
 - Add `rustfmt.toml`, workspace-level clippy lints, and a CI workflow (fmt, clippy `-D warnings`, test)
   for Windows, Linux and macOS.
 - ✅ GPL-3.0 `LICENSE` file added. Set `license = "GPL-3.0-or-later"` in the workspace `Cargo.toml`.
-- ⚠️ Baseline dependencies to approve: `thiserror` (libs), `anyhow` (app), `eframe`/`egui` (app).
+- ✅ Baseline dependencies approved: `thiserror` (libs), `anyhow` (app), `eframe`/`egui` (app).
   Golden tests need no dependency (Decision D1).
 
 **Done when:** `cargo check/test/clippy/fmt` all pass, and `cargo run -p pf-app` opens an empty window.
 
 ---
 
-## Phase 1: Core geometry (`pf-core`)
+## Phase 1: Core geometry (`pf-core`) ✅
+
+**Status:** done.
 
 **Goal:** the in-memory model everything else builds on. Pure, no I/O.
 
@@ -39,13 +63,17 @@ motion/laser path, safety limits, or project file format).
 - `Document`: ordered layers and the shapes assigned to them.
 - `MachineProfile`: work area, origin corner, max S value (`$30`), max speed, with
   **conservative defaults** and validation helpers (`is_inside_work_area`, power clamping).
-  ⚠️ The default values themselves need your sign-off and are never relaxed afterwards.
+  ✅ Defaults signed off (300 × 200 mm, bottom-left origin, S1000, 6000 mm/min, 100 % max power,
+  0 % frame power). They are never relaxed afterwards.
 
 **Done when:** unit tests cover transforms, bounding boxes, flattening tolerance, and the profile validation.
 
 ---
 
-## Phase 2: Vector G-code generation (`pf-gcode`)
+## Phase 2: Vector G-code generation (`pf-gcode`) ✅
+
+**Status:** done. Golden tests pass. Running the sample output through a G-code simulator
+has not been recorded yet.
 
 **Goal:** `Document` + `MachineProfile` → G-code string for line (cut/score) layers.
 
@@ -63,7 +91,9 @@ motion/laser path, safety limits, or project file format).
 
 ---
 
-## Phase 3: SVG import (`pf-io`)
+## Phase 3: SVG import (`pf-io`) ✅
+
+**Status:** done. M1 reached.
 
 **Goal:** real files feed the pipeline.
 
@@ -78,7 +108,16 @@ motion/laser path, safety limits, or project file format).
 
 ---
 
-## Phase 4: GUI MVP (`pf-app`)
+## Phase 4: GUI MVP (`pf-app`) ✅
+
+**Status:** done ([spec](docs/specs/04-gui-mvp.md)). M2 is covered by the integration test
+`m2_import_arrange_edit_undo_redo_and_generate` and its golden file. A canvas frame with 10k
+segments takes about 1 ms of CPU in release (about 4.6 ms with everything selected and moving).
+The GPU side and a recorded manual GUI walkthrough are still open.
+
+Also delivered beyond the original list: pure `pf-core` modules `viewport`, `history`, `hit` and
+`handles`; SVG import that merges layers by color; a background thread for import and export;
+and an import-warnings dialog.
 
 **Goal:** a usable offline designer. Still no hardware.
 
@@ -89,17 +128,29 @@ motion/laser path, safety limits, or project file format).
 - Toolpath preview: travel vs. cut lines, estimated job time (the estimate itself lives in `pf-gcode`).
 - "Save G-code…" export.
 - Undo/redo as a plain command stack in `pf-core`. The app only calls into it.
-- ⚠️ Probably needs `rfd` for native file dialogs.
+- ✅ `rfd` approved for native file dialogs.
 
 **Milestone M2:** design → preview → export G-code entirely from the GUI.
 
 ---
 
-## Phase 5: GRBL connection, read-only (`pf-device`)
+## Phase 5: GRBL connection, read-only (`pf-device`) 🟡
+
+**Status:** code done for 5.1–5.5 ([spec](docs/specs/05-grbl-readonly.md)). **Open:** 5.6, the
+hardware smoke test on a real board, using
+[`docs/hardware/grbl-readonly-smoke.md`](docs/hardware/grbl-readonly-smoke.md). Record the
+board and firmware in the PR.
+
+- Only `?`, `$$`, `$I` and `$G` can be sent, enforced by the `ReadOnlyRequest` type and tested.
+- Code and setting tables come from the GRBL v1.1h docs and CSVs, and the state rules from
+  `system.c`.
+- DTR is off by default and documented in [`docs/hardware/dtr.md`](docs/hardware/dtr.md).
+  Linux always pulses DTR on open, so most Arduino-based boards reset there.
+- Identification works without a reset: a welcome message, or `$I` after 2 s.
 
 **Goal:** talk to the controller **without** moving it or firing the laser.
 
-- ⚠️ `serialport` (already in the stack; confirm adding it).
+- ✅ `serialport` 4.10 approved (`default-features = false`, so no `libudev` on Linux).
 - Port listing, connect/disconnect, baud selection, welcome-banner detection (`Grbl 1.1x`).
 - A `Transport` trait boundary (real serial plus an in-memory mock), the one justified abstraction, used for tests.
 - Parsers (pure, heavily unit-tested): status reports `<Idle|MPos:…|FS:…>`, `ok`, `error:N`,
