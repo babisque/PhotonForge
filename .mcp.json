@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "openlore": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\rodrigo\\AppData\\Roaming\\npm\\node_modules\\openlore\\dist\\cli\\index.js",
+        "mcp",
+        "--preset",
+        "substrate"
+      ]
+    }
+  },
+  "_openlore": {
+    "managed": true,
+    "version": 1,
+    "fingerprint": "4169209ccc88609a",
+    "paths": [
+      "mcpServers.openlore"
+    ]
+  }
+}

@@ -39,3 +39,6 @@ Desktop.ini
 # Local test output (generated G-code, scratch files)
 /scratch/
 *.local.gcode
+
+# openlore analysis artifacts
+.openlore/

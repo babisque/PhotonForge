@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "_openlore": true,
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\Program Files\\nodejs\\node.exe\" \"C:\\Users\\rodrigo\\AppData\\Roaming\\npm\\node_modules\\openlore\\dist\\cli\\index.js\" orient --json"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "_openlore": true,
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\Program Files\\nodejs\\node.exe\" \"C:\\Users\\rodrigo\\AppData\\Roaming\\npm\\node_modules\\openlore\\dist\\cli\\index.js\" orient --inject"
+          }
+        ]
+      }
+    ]
+  }
+}
