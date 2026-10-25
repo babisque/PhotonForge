@@ -1,8 +1,7 @@
 # Project Spec: Phase 5: GRBL Connection, Read-Only (`pf-device`)
 
 ## 1. Overview and Goal
-* **Purpose:** Connect to a GRBL controller over serial, show live status, and read settings,
-  **without sending any command that moves the machine or turns on the laser**.
+* **Purpose:** Connect to a GRBL controller over serial, show live status, and read settings, **without sending any command that moves the machine or turns on the laser**.
 * **Success Criteria:**
   * Lists serial ports, connects at a selected baud rate (default 115200), and detects the `Grbl 1.1x` banner.
   * Parses status reports, `ok`, `error:N`, `ALARM:N`, `$$` settings, `[MSG:…]`, and `$I` build info. Each has unit tests.
