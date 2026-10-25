@@ -5,14 +5,19 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
+use std::time::Instant;
 
 use pf_core::{
     Command, Document, LayerId, MachineProfile, Shape, ShapeId, Transform, is_inside_work_area,
 };
-use pf_device::{ConnectOptions, DeviceEvent, ReadOnlyRequest, SerialSettings, list_ports};
+use pf_device::{
+    ConnectOptions, ControlRequest, DeviceEvent, JobKind, JobRequest, ReadOnlyRequest,
+    SerialSettings, StreamMode, list_ports,
+};
 use pf_gcode::JobOptions;
 use pf_io::{IoError, SvgImport, SvgImportOptions, WriteMode};
 
+use crate::display::GcodeTarget;
 use crate::panels::preview::describe_gcode_error;
 use crate::state::{AppState, BackgroundJob, ImportReport, StatusLevel};
 
@@ -332,6 +337,113 @@ pub fn device_request(state: &mut AppState, request: ReadOnlyRequest) {
     }
 }
 
+/// Hands a control request to the connection. Refusals come back as
+/// events; without a connection nothing happens.
+pub fn device_control(state: &mut AppState, control: ControlRequest) {
+    if let Some(connection) = &state.device.connection {
+        connection.control(control);
+    }
+}
+
+/// Laser power for framing: the profile's frame power when the user asked
+/// for the laser on, else 0 (laser off).
+pub fn frame_power(state: &AppState) -> f64 {
+    if state.device.frame_laser {
+        state.profile.frame_power_percent()
+    } else {
+        0.0
+    }
+}
+
+pub fn refresh_frame(state: &mut AppState) {
+    let power_percent = frame_power(state);
+    state.device.frame_gcode.sync(
+        &state.document,
+        state.history.revision(),
+        &state.profile,
+        &state.job_options,
+        GcodeTarget::Frame { power_percent },
+    );
+}
+
+pub fn refresh_job(state: &mut AppState) {
+    state.device.job_gcode.sync(
+        &state.document,
+        state.history.revision(),
+        &state.profile,
+        &state.job_options,
+        GcodeTarget::Job,
+    );
+}
+
+/// The frame's lines if it may start now, or every reason it may not. The
+/// connection checks again before sending anything.
+pub fn frame_plan(state: &AppState) -> Result<Vec<String>, Vec<String>> {
+    plan(state.device.frame_gcode.result(), JobKind::Frame, state)
+}
+
+/// Like `frame_plan`, for the job itself.
+pub fn job_plan(state: &AppState) -> Result<Vec<String>, Vec<String>> {
+    plan(state.device.job_gcode.result(), JobKind::Job, state)
+}
+
+fn plan(
+    gcode: Option<&Result<Vec<String>, String>>,
+    kind: JobKind,
+    state: &AppState,
+) -> Result<Vec<String>, Vec<String>> {
+    let lines = match gcode {
+        None => return Err(vec![String::from("the G-code is not prepared yet")]),
+        Some(Err(reason)) => return Err(vec![reason.clone()]),
+        Some(Ok(lines)) => lines.clone(),
+    };
+    if state.device.snapshot.job.is_active() {
+        return Err(vec![String::from("a job is running")]);
+    }
+    let summary = pf_device::scan_job(&lines).map_err(|err| vec![err.to_string()])?;
+    pf_device::preflight(&state.device.snapshot, &summary, kind, &state.profile)
+        .map_err(|errors| errors.iter().map(ToString::to_string).collect::<Vec<_>>())?;
+    Ok(lines)
+}
+
+pub fn start_frame(state: &mut AppState) {
+    refresh_frame(state);
+    let planned = frame_plan(state);
+    start(state, JobKind::Frame, planned);
+}
+
+/// Starts the job. The GUI asks for confirmation before calling this.
+pub fn start_job(state: &mut AppState) {
+    refresh_job(state);
+    let planned = job_plan(state);
+    start(state, JobKind::Job, planned);
+}
+
+fn start(state: &mut AppState, kind: JobKind, planned: Result<Vec<String>, Vec<String>>) {
+    match planned {
+        Ok(lines) => {
+            let job = JobRequest {
+                kind,
+                lines,
+                profile: state.profile.clone(),
+                mode: StreamMode::CharacterCounting,
+            };
+            state.device.running_kind = Some(kind);
+            device_control(state, ControlRequest::Start(job));
+        }
+        Err(reasons) => {
+            let what = match kind {
+                JobKind::Job => "Job",
+                JobKind::Frame => "Frame",
+            };
+            state.set_status(
+                StatusLevel::Warning,
+                format!("{what} refused: {}", reasons.join("; ")),
+            );
+        }
+    }
+}
+
 /// Picks up what the connection reported since the last frame.
 pub fn poll_device(state: &mut AppState) {
     let events = match &state.device.connection {
@@ -343,8 +455,18 @@ pub fn poll_device(state: &mut AppState) {
 
 fn handle_device_events(state: &mut AppState, events: Vec<DeviceEvent>) {
     for event in events {
+        let was_active = state.device.snapshot.job.is_active();
         state.device.console.record(&event);
         state.device.snapshot.apply(&event);
+        if let DeviceEvent::JobStateChanged(job) = &event {
+            let now = Instant::now();
+            if job.is_active() && !was_active {
+                state.device.job_started = Some(now);
+                state.device.job_ended = None;
+            } else if !job.is_active() && was_active {
+                state.device.job_ended = Some(now);
+            }
+        }
         match &event {
             DeviceEvent::Disconnected { reason } => {
                 state.device.connection = None;
@@ -357,6 +479,16 @@ fn handle_device_events(state: &mut AppState, events: Vec<DeviceEvent>) {
                 StatusLevel::Error,
                 crate::panels::console::describe_alarm(*code),
             ),
+            DeviceEvent::ControlRejected { control, reasons } => state.set_status(
+                StatusLevel::Warning,
+                format!("{control} refused: {}", reasons.join("; ")),
+            ),
+            DeviceEvent::ControlFailed { control, reason } => {
+                state.set_status(StatusLevel::Error, format!("{control} failed: {reason}"));
+            }
+            DeviceEvent::ControlCompleted { control } => {
+                state.set_status(StatusLevel::Info, format!("{control} done"));
+            }
             _ => {}
         }
     }
@@ -825,6 +957,118 @@ mod tests {
         assert!(!state.device.snapshot.is_connected());
         assert_eq!(level(&state), StatusLevel::Warning);
         assert!(state.device.console.visible().count() >= 3);
+    }
+
+    #[test]
+    fn framing_is_prepared_once_and_checked_before_starting() {
+        let mut state = AppState::new();
+        let layer = state.document.add_layer("Cut", [0, 0, 0]).unwrap();
+        let rect = pf_core::ShapeKind::Rect(pf_core::RectShape::new(50.0, 30.0, 0.0).unwrap());
+        state
+            .document
+            .add_shape(rect, Transform::translate(10.0, 10.0), layer)
+            .unwrap();
+        refresh_frame(&mut state);
+        let lines = match state.device.frame_gcode.result() {
+            Some(Ok(lines)) => lines.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(lines[2], "M5");
+        assert_eq!(lines[3], "G0 X10 Y10");
+        // Not connected: refused with the reason, nothing sent.
+        assert_eq!(
+            frame_plan(&state),
+            Err(vec![String::from("not connected to a controller")])
+        );
+        refresh_job(&mut state);
+        assert_eq!(
+            job_plan(&state),
+            Err(vec![String::from("not connected to a controller")])
+        );
+        start_job(&mut state);
+        assert!(
+            state
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .starts_with("Job refused")
+        );
+        assert_eq!(state.device.running_kind, None);
+        // Generated once per change, not once per call.
+        refresh_job(&mut state);
+        assert_eq!(state.device.job_gcode.builds(), 1);
+        state.job_options.flatten_tolerance = 0.02;
+        refresh_job(&mut state);
+        assert_eq!(state.device.job_gcode.builds(), 2);
+        start_frame(&mut state);
+        assert_eq!(level(&state), StatusLevel::Warning);
+        assert!(
+            state
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .starts_with("Frame refused")
+        );
+
+        // The laser stays off unless the profile allows a framing power.
+        state.device.frame_laser = true;
+        assert_eq!(frame_power(&state), 0.0);
+    }
+
+    #[test]
+    fn job_clock_runs_from_start_to_end() {
+        let mut state = AppState::new();
+        handle_device_events(
+            &mut state,
+            vec![DeviceEvent::JobStateChanged(pf_device::JobState::Running)],
+        );
+        let started = state.device.job_started.unwrap();
+        assert_eq!(state.device.job_ended, None);
+        handle_device_events(
+            &mut state,
+            vec![
+                DeviceEvent::JobStateChanged(pf_device::JobState::Held),
+                DeviceEvent::JobStateChanged(pf_device::JobState::Running),
+            ],
+        );
+        assert_eq!(state.device.job_started, Some(started));
+        handle_device_events(
+            &mut state,
+            vec![DeviceEvent::JobStateChanged(pf_device::JobState::Done)],
+        );
+        assert!(state.device.job_ended.is_some());
+    }
+
+    #[test]
+    fn control_results_reach_the_status_bar() {
+        let mut state = AppState::new();
+        // Without a connection a control does nothing.
+        device_control(&mut state, ControlRequest::Home);
+        assert_eq!(state.status, None);
+        handle_device_events(
+            &mut state,
+            vec![DeviceEvent::ControlRejected {
+                control: "Home",
+                reasons: vec!["homing is disabled on the controller ($22=0)".into()],
+            }],
+        );
+        assert_eq!(level(&state), StatusLevel::Warning);
+        handle_device_events(
+            &mut state,
+            vec![DeviceEvent::ControlFailed {
+                control: "Home",
+                reason: "ALARM:9".into(),
+            }],
+        );
+        assert_eq!(level(&state), StatusLevel::Error);
+        assert_eq!(state.status.as_ref().unwrap().text, "Home failed: ALARM:9");
+        handle_device_events(
+            &mut state,
+            vec![DeviceEvent::ControlCompleted { control: "Unlock" }],
+        );
+        assert_eq!(state.status.as_ref().unwrap().text, "Unlock done");
     }
 
     #[test]

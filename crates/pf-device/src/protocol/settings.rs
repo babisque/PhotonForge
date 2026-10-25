@@ -382,6 +382,11 @@ impl GrblSettings {
         self.boolean(22)
     }
 
+    /// `$25`, mm/min: the fast search phase of homing.
+    pub fn homing_seek_rate(&self) -> Option<f64> {
+        self.decimal(25)
+    }
+
     /// `$30`: the S value for 100 % PWM (laser power).
     pub fn max_spindle_speed(&self) -> Option<f64> {
         self.decimal(30)
@@ -463,6 +468,7 @@ mod tests {
         assert_eq!(s.soft_limits(), Some(false));
         assert_eq!(s.hard_limits(), Some(false));
         assert_eq!(s.homing(), Some(false));
+        assert_eq!(s.homing_seek_rate(), Some(500.0));
         assert_eq!(s.max_spindle_speed(), Some(1000.0));
         assert_eq!(s.min_spindle_speed(), Some(0.0));
         assert_eq!(s.laser_mode(), Some(true));

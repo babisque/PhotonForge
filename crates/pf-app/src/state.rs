@@ -3,16 +3,17 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
+use std::time::Instant;
 
 use pf_core::{
     Document, Handle, History, LayerId, MachineError, MachineProfile, Origin, Point, Rect, ShapeId,
     Viewport,
 };
-use pf_device::{Connection, DEFAULT_BAUD, DEFAULT_POLL_HZ, DeviceSnapshot, PortInfo};
+use pf_device::{Connection, DEFAULT_BAUD, DEFAULT_POLL_HZ, DeviceSnapshot, JobKind, PortInfo};
 use pf_gcode::JobOptions;
 use pf_io::{ImportWarning, IoError, SvgImport};
 
-use crate::display::{DisplayCache, PreviewCache};
+use crate::display::{DisplayCache, GcodeCache, PreviewCache};
 use crate::panels::console::Console;
 
 /// Which editor the right-hand side panel shows.
@@ -100,8 +101,8 @@ impl ProfileDraft {
     }
 }
 
-/// The GRBL connection and what the device panel shows. Read-only in this
-/// phase: nothing here can move the machine or fire the laser.
+/// The GRBL connection and what the device panel shows. The machine only
+/// moves on an explicit control: Home, a confirmed Unlock, or Stop.
 #[derive(Debug)]
 pub struct DeviceUi {
     pub ports: Vec<PortInfo>,
@@ -115,6 +116,40 @@ pub struct DeviceUi {
     pub snapshot: DeviceSnapshot,
     pub console: Console,
     pub show_console: bool,
+    /// The unlock confirmation dialog is open.
+    pub confirm_unlock: bool,
+    pub jog: JogUi,
+    /// Frame with the laser at the profile's frame power instead of off.
+    pub frame_laser: bool,
+    pub frame_gcode: GcodeCache,
+    pub job_gcode: GcodeCache,
+    /// The start confirmation dialog is open.
+    pub confirm_start: bool,
+    /// What was started last, for the remaining-time estimate.
+    pub running_kind: Option<JobKind>,
+    /// When the current or last job started and ended.
+    pub job_started: Option<Instant>,
+    pub job_ended: Option<Instant>,
+}
+
+/// Jog pad settings, and the direction of a continuous jog being held.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JogUi {
+    pub step_mm: f64,
+    pub feed_mm_min: f64,
+    pub continuous: bool,
+    pub held: Option<[i8; 2]>,
+}
+
+impl Default for JogUi {
+    fn default() -> Self {
+        JogUi {
+            step_mm: 1.0,
+            feed_mm_min: 1000.0,
+            continuous: false,
+            held: None,
+        }
+    }
 }
 
 impl Default for DeviceUi {
@@ -129,6 +164,15 @@ impl Default for DeviceUi {
             snapshot: DeviceSnapshot::default(),
             console: Console::default(),
             show_console: false,
+            confirm_unlock: false,
+            jog: JogUi::default(),
+            frame_laser: false,
+            frame_gcode: GcodeCache::default(),
+            job_gcode: GcodeCache::default(),
+            confirm_start: false,
+            running_kind: None,
+            job_started: None,
+            job_ended: None,
         }
     }
 }

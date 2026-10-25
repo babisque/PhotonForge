@@ -1,5 +1,7 @@
+use crate::job::{JobProgress, JobState};
 use crate::protocol::ParseError;
 use crate::protocol::build_info::BuildInfo;
+use crate::protocol::outgoing::Realtime;
 use crate::protocol::parse::Response;
 use crate::protocol::parser_state::ParserState;
 use crate::protocol::readonly::ReadOnlyRequest;
@@ -31,6 +33,27 @@ pub enum DeviceEvent {
     },
     /// A request written to the controller, for the console.
     Sent(ReadOnlyRequest),
+    /// A real-time command written to the controller, for the console.
+    SentRealtime(Realtime),
+    /// A control line written to the controller (e.g. `M5`), for the
+    /// console. Job lines are not reported one by one.
+    SentLine(String),
+    JobStateChanged(JobState),
+    JobProgress(JobProgress),
+    /// A control request was refused; nothing was sent.
+    ControlRejected {
+        control: &'static str,
+        reasons: Vec<String>,
+    },
+    /// The controller answered a control command (`$X`, `$H`) with `ok`.
+    ControlCompleted {
+        control: &'static str,
+    },
+    /// A control command was sent but failed: an error, an alarm, no answer.
+    ControlFailed {
+        control: &'static str,
+        reason: String,
+    },
     Status {
         report: StatusReport,
         /// Machine and work positions, using the last known WCO.

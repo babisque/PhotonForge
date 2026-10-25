@@ -7,6 +7,7 @@
 
 pub mod emit;
 pub mod estimate;
+pub mod frame;
 pub mod options;
 pub mod order;
 pub mod preview;
@@ -18,6 +19,7 @@ use thiserror::Error;
 
 pub use emit::{emit, format_coord};
 pub use estimate::{JobEstimate, estimate};
+pub use frame::{FRAME_SPEED_MM_MIN, frame, job_bounds};
 pub use options::{DEFAULT_FLATTEN_TOLERANCE, JobOptions, JobOrigin};
 pub use order::order_toolpaths;
 pub use preview::{JobPreview, preview};
@@ -48,6 +50,12 @@ pub enum GcodeError {
     InvalidTemplateChar { template: &'static str, ch: char },
     #[error("nothing to output: no enabled line layer has any shapes")]
     NothingToOutput,
+    #[error(
+        "frame power {power}% is invalid: must be between 0 and the profile's frame power of {max}%"
+    )]
+    InvalidFramePower { power: f64, max: f64 },
+    #[error("the frame {bounds:?} is outside the work area")]
+    FrameOutOfBounds { bounds: Rect },
     #[error(transparent)]
     Geometry(#[from] GeometryError),
 }
@@ -70,6 +78,19 @@ pub fn estimate_job(
 ) -> Result<JobEstimate, GcodeError> {
     let toolpaths = prepare_job(doc, profile, options)?;
     Ok(estimate(&toolpaths, profile))
+}
+
+/// G-code that frames the job `generate` would produce: its bounding box,
+/// laser off unless `power_percent` is above 0 (see `frame`).
+pub fn generate_frame(
+    doc: &Document,
+    profile: &MachineProfile,
+    options: &JobOptions,
+    power_percent: f64,
+) -> Result<String, GcodeError> {
+    let toolpaths = prepare_job(doc, profile, options)?;
+    let bounds = job_bounds(&toolpaths).ok_or(GcodeError::NothingToOutput)?;
+    frame(bounds, profile, power_percent)
 }
 
 /// Toolpaths in machine coordinates and cut order, validated: exactly what

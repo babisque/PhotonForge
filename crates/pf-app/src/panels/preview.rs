@@ -80,6 +80,10 @@ pub fn describe_gcode_error(err: &GcodeError, doc: &Document) -> String {
         GcodeError::NothingToOutput => {
             String::from("Nothing to output: no enabled Line layer has any shapes.")
         }
+        GcodeError::FrameOutOfBounds { .. } => String::from("The frame would leave the work area."),
+        GcodeError::InvalidFramePower { power, max } => {
+            format!("Frame power {power} % is above the profile's frame power of {max} %.")
+        }
         GcodeError::InvalidTemplateChar { .. } | GcodeError::Geometry(_) => err.to_string(),
     }
 }

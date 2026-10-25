@@ -5,7 +5,9 @@ use std::time::Duration;
 use egui::{Key, KeyboardShortcut, Modifiers};
 
 use crate::actions;
-use crate::panels::{canvas, connection, console, import_warnings, layers, machine, preview};
+use crate::panels::{
+    canvas, connection, console, control, import_warnings, layers, machine, preview,
+};
 use crate::state::{AppState, SideTab, StatusLevel};
 
 const IMPORT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::I);
@@ -37,7 +39,7 @@ impl eframe::App for PhotonForgeApp {
         }
         handle_shortcuts(ui, &mut self.state);
         egui::Panel::top("menu_bar").show(ui, |ui| show_menu_bar(ui, &mut self.state));
-        egui::Panel::bottom("status_bar").show(ui, |ui| show_status_bar(ui, &self.state));
+        egui::Panel::bottom("status_bar").show(ui, |ui| show_status_bar(ui, &mut self.state));
         if self.state.device.show_console {
             egui::Panel::bottom("console")
                 .resizable(true)
@@ -154,9 +156,19 @@ fn handle_shortcuts(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-fn show_status_bar(ui: &mut egui::Ui, state: &AppState) {
+/// Stop sits here too, so it is in reach from every tab while connected.
+fn show_status_bar(ui: &mut egui::Ui, state: &mut AppState) {
     let area = state.profile.work_area();
+    let mut stop = false;
     ui.horizontal(|ui| {
+        if state.device.snapshot.is_connected()
+            && ui
+                .add(control::stop_button())
+                .on_hover_text("Feed hold, soft reset, then laser off (M5)")
+                .clicked()
+        {
+            stop = true;
+        }
         if state.job.is_some() {
             ui.spinner();
         }
@@ -188,6 +200,9 @@ fn show_status_bar(ui: &mut egui::Ui, state: &AppState) {
             }
         });
     });
+    if stop {
+        actions::device_control(state, pf_device::ControlRequest::Stop);
+    }
 }
 
 fn show_side_panel(ui: &mut egui::Ui, state: &mut AppState) {

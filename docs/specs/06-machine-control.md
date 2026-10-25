@@ -4,8 +4,7 @@
 > Each one is proposed (with a diff summary) and needs explicit approval before it is implemented.**
 
 ## 1. Overview and Goal
-* **Purpose:** Run jobs on real hardware safely: streaming, pause/resume/stop, homing, unlock,
-  jogging, and framing.
+* **Purpose:** Run jobs on real hardware safely: streaming, pause/resume/stop, homing, unlock, jogging, and framing.
 * **Success Criteria:**
   * **M3:** a simple SVG is cut on a real GRBL machine end to end.
   * Streaming never overflows GRBL's RX buffer. This is verified against a mock that enforces 128 bytes.
@@ -31,16 +30,20 @@
 ## 3. Executable Commands
 * **Test:** `cargo test -p pf-device`
 * **Streaming tests:** `cargo test -p pf-device stream`
-* **Hardware test:** documented checklist in `docs/hardware-test.md`. Always run it with the laser at low power, eye protection on, and the enclosure closed.
+* **Hardware test:** documented checklist in `docs/hardware/machine-control-test.md`. Always run it with the laser at low power, eye protection on, and the enclosure closed.
 
 ## 4. Project Structure
 * `src/stream.rs`: `Streamer` (pure, with character-counting bookkeeping) that takes a `Vec<String>` and emits sends and acks.
 * `src/job.rs`: `JobState` enum, transitions, `JobProgress { lines_sent, lines_acked, total }`.
 * `src/control.rs`: the `ControlRequest` enum: `Start`, `Hold`, `Resume`, `Stop`, `Unlock`, `Home`, `Jog`, `JogCancel`, `Frame`.
-* `src/preflight.rs`: `preflight(status, settings, gcode_bounds, profile) -> Result<(), PreflightError>`.
-* `src/frame.rs`: generates the frame toolpath (bounding box) through `pf-gcode` with the laser off by default.
+* `src/preflight.rs`: `scan_job(lines) -> JobSummary` (bounds and max `S` of the exact lines to stream) and
+  `preflight(snapshot, summary, kind, profile) -> Result<(), Vec<PreflightError>>` (every failure at once).
+* `src/sim.rs` (tests only): simulated GRBL 1.1 controller that enforces the 128-byte RX buffer.
+* `crates/pf-gcode/src/frame.rs`: generates the frame G-code (bounding box) with the laser off by default.
+  It lives in `pf-gcode` with the other G-code generation and gets golden tests; `pf-device` streams it as a
+  `JobKind::Frame` job.
 * `crates/pf-app/src/panels/control.rs`, `panels/jog.rs`: GUI controls.
-* `docs/hardware-test.md`: manual test checklist.
+* `docs/hardware/machine-control-test.md`: manual test checklist.
 
 ## 5. Code Style and Conventions
 * The `Streamer` is pure and has no I/O, so every buffer edge case is unit-testable.
@@ -60,7 +63,21 @@
   ```
 * **Pre-flight checks:** connected; state is `Idle`; no active alarm; `$32=1` (laser mode); the job bounds are inside the work area; the job's max `S` ≤ `$30` and ≤ the profile max.
 * **Stop sequence:** `!` (hold) → `0x18` (soft reset) → wait for the banner → `$X` only if the user confirms → `M5`.
+* **Pause:** a job counts as held only when GRBL reports `Hold:0` in a report carrying `Ov:` (so `A:` is
+  authoritative) with no `A:S`/`A:C`. GRBL turns the laser off in a hold only when built with
+  `DISABLE_LASER_DURING_HOLD` (on by default in `config.h`, not visible in `$I`), so it is checked, not assumed.
+  Laser still on, or no confirmation within 5 s: the job is stopped and faulted.
+* **Jog:** `$J=G91 G21 X.. Y.. F..`, clamped so the head never leaves the work area (and never moves further than
+  asked from outside it); feed capped at the profile maximum; one jog in flight at a time. A jog carries GRBL's
+  current spindle state and S (`gcode.c`, jog branch; laser mode's G0 laser-off rule does not apply), so it is
+  refused unless a `$G` read after the last job shows `M5`. The position must be at most two polls old.
+* **Error mid-job:** any `error:N` faults the job. Streaming stops and the stop sequence runs (without `$X`).
+* **Work offset:** pre-flight fails while a work offset (WCO) is active, or while it is still unknown.
+* **Spindle override:** pre-flight fails above 100%, so overrides cannot push power past the profile limit.
 * **Frame:** laser off (`S0` / `M5`) by default. Low-power framing is only allowed up to `profile.frame_power_percent`, which defaults to 0.
+  The frame traces the bounding box of the job's prepared toolpaths with `G1` at 3000 mm/min (capped at the profile's
+  max feed), so it shows exactly where the job lands. Low power uses `M4` (dynamic), so the laser is dark whenever the
+  head stops. A frame is streamed as a `JobKind::Frame` job: same pre-flight, pause and stop.
 
 ## 6. Boundaries and Guardrails
 * **Always do:** Propose each sub-phase and wait for approval. Test against `MockTransport` before any hardware test. Keep the Stop button visible and enabled whenever connected.
@@ -75,4 +92,4 @@
 * **6.5 Jogging:** `$J=G91 …` from the jog panel, with jog cancel on release. Distances are clamped to the work area.
 * **6.6 Framing:** bounding-box trace with the laser off.
 * **6.7 GUI job controls:** Start/Pause/Resume/Stop, progress, state display.
-* **6.8 M3 hardware run:** follow `docs/hardware-test.md`, cut the sample, and record the results.
+* **6.8 M3 hardware run:** follow `docs/hardware/machine-control-test.md`, cut the sample, and record the results.

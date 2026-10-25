@@ -4,11 +4,12 @@
 use pf_core::units::MM_PER_INCH;
 
 use crate::event::{ConnectionState, DeviceEvent};
+use crate::job::{JobEvent, JobProgress, JobState, StopStage, transition};
 use crate::protocol::ParseError;
 use crate::protocol::build_info::BuildInfo;
-use crate::protocol::parser_state::ParserState;
+use crate::protocol::parser_state::{ParserState, SpindleState};
 use crate::protocol::settings::GrblSettings;
-use crate::protocol::status::{MachineState, Positions, StatusReport};
+use crate::protocol::status::{MachineState, Overrides, Positions, StatusReport};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum LinkState {
@@ -28,6 +29,8 @@ pub struct DeviceSnapshot {
     pub disconnect_reason: Option<String>,
     pub status: Option<StatusReport>,
     pub positions: Option<Positions>,
+    /// GRBL sends `Ov:` only every few reports: the last one is kept.
+    pub overrides: Option<Overrides>,
     pub settings: Option<GrblSettings>,
     pub setting_errors: Vec<ParseError>,
     pub build_info: Option<BuildInfo>,
@@ -35,6 +38,8 @@ pub struct DeviceSnapshot {
     /// The most recent `ALARM:N`, cleared once GRBL leaves the alarm state.
     pub last_alarm: Option<u8>,
     pub unresponsive: bool,
+    pub job: JobState,
+    pub job_progress: Option<JobProgress>,
 }
 
 impl DeviceSnapshot {
@@ -59,11 +64,20 @@ impl DeviceSnapshot {
                 // Live values are stale now; what was read stays visible.
                 self.status = None;
                 self.positions = None;
+                self.overrides = None;
                 self.unresponsive = false;
+                // The connection thread is gone with its job; a job that was
+                // still active failed.
+                if let Ok(job) = transition(&self.job, JobEvent::Disconnected(reason.clone())) {
+                    self.job = job;
+                }
             }
             DeviceEvent::Status { report, positions } => {
                 if report.state != MachineState::Alarm {
                     self.last_alarm = None;
+                }
+                if report.overrides.is_some() {
+                    self.overrides = report.overrides;
                 }
                 self.status = Some(report.clone());
                 self.positions = Some(*positions);
@@ -78,12 +92,28 @@ impl DeviceSnapshot {
             DeviceEvent::ControllerReset => {
                 self.status = None;
                 self.positions = None;
+                self.overrides = None;
                 self.parser_state = None;
             }
+            DeviceEvent::JobStateChanged(job) => {
+                if *job == JobState::Running && !self.job.is_active() {
+                    self.job_progress = None;
+                }
+                self.job = job.clone();
+                // A job changes the laser's modal state; `$G` is read again
+                // once it ends.
+                self.parser_state = None;
+            }
+            DeviceEvent::JobProgress(progress) => self.job_progress = Some(*progress),
             DeviceEvent::Unresponsive => self.unresponsive = true,
             DeviceEvent::Responsive => self.unresponsive = false,
             DeviceEvent::Received { .. }
             | DeviceEvent::Sent(_)
+            | DeviceEvent::SentRealtime(_)
+            | DeviceEvent::SentLine(_)
+            | DeviceEvent::ControlRejected { .. }
+            | DeviceEvent::ControlCompleted { .. }
+            | DeviceEvent::ControlFailed { .. }
             | DeviceEvent::CommandFailed { .. }
             | DeviceEvent::RequestTimedOut(_)
             | DeviceEvent::Message(_)
@@ -93,6 +123,74 @@ impl DeviceSnapshot {
 
     pub fn is_connected(&self) -> bool {
         self.link != LinkState::Disconnected
+    }
+
+    /// Whether `$X` may be sent now, or why not. The user must still
+    /// confirm it.
+    pub fn can_unlock(&self) -> Result<(), String> {
+        self.free_for_commands()?;
+        match self.status.as_ref().map(|s| s.state) {
+            Some(MachineState::Alarm) => Ok(()),
+            _ => Err(String::from("there is no alarm to clear")),
+        }
+    }
+
+    /// Whether `$H` may be sent now, or why not.
+    pub fn can_home(&self) -> Result<(), String> {
+        self.free_for_commands()?;
+        let Some(settings) = &self.settings else {
+            return Err(String::from("the controller settings are not read yet"));
+        };
+        if settings.homing() != Some(true) {
+            return Err(String::from("homing is disabled on the controller ($22=0)"));
+        }
+        match self.status.as_ref().map(|s| s.state) {
+            Some(MachineState::Idle | MachineState::Alarm) => Ok(()),
+            Some(other) => Err(format!(
+                "the machine is {other:?}; homing needs Idle or Alarm"
+            )),
+            None => Err(String::from("no status report yet")),
+        }
+    }
+
+    /// Whether a jog may be sent now, or why not. A jog runs with GRBL's
+    /// current spindle state and S (`gcode.c`, jog branch), so the last
+    /// `$G` must show the laser off (`M5`).
+    pub fn can_jog(&self) -> Result<(), String> {
+        self.free_for_commands()?;
+        match self.status.as_ref().map(|s| s.state) {
+            Some(MachineState::Idle | MachineState::Jog) => {}
+            Some(MachineState::Alarm) => {
+                return Err(String::from("unlock or home the machine first"));
+            }
+            Some(other) => return Err(format!("the machine is {other:?}; jogging needs Idle")),
+            None => return Err(String::from("no status report yet")),
+        }
+        if self.settings.is_none() || self.machine_position_mm().is_none() {
+            return Err(String::from("the head position is not known yet"));
+        }
+        match self.parser_state.as_ref().and_then(|p| p.spindle) {
+            Some(SpindleState::Off) => Ok(()),
+            Some(_) => Err(String::from(
+                "the laser is on (M3/M4) in GRBL's parser state; a jog would fire it",
+            )),
+            None => Err(String::from("checking the laser state ($G)")),
+        }
+    }
+
+    /// Connected, and no job or stop sequence owns the connection. A stop
+    /// waiting for an unlock lets unlock and homing through.
+    fn free_for_commands(&self) -> Result<(), String> {
+        if !matches!(self.link, LinkState::Ready { .. }) {
+            return Err(String::from("not connected"));
+        }
+        match &self.job {
+            JobState::Running | JobState::Held => Err(String::from("a job is running")),
+            JobState::Stopping { stage, .. } if *stage != StopStage::AwaitingUnlock => {
+                Err(String::from("the machine is stopping"))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Where the laser head is, in machine millimeters. GRBL reports inches
@@ -161,6 +259,49 @@ mod tests {
         assert_eq!(s.last_alarm, Some(2));
         s.apply(&status("<Idle|MPos:0.000,0.000,0.000|FS:0,0>"));
         assert_eq!(s.last_alarm, None);
+    }
+
+    #[test]
+    fn overrides_survive_reports_without_them_until_a_reset() {
+        let mut s = snapshot_after(&[status("<Idle|MPos:0,0,0|FS:0,0|Ov:100,50,120>")]);
+        s.apply(&status("<Idle|MPos:0,0,0|FS:0,0>"));
+        assert_eq!(s.overrides.map(|o| o.spindle), Some(120));
+        s.apply(&DeviceEvent::ControllerReset);
+        assert_eq!(s.overrides, None);
+        s.apply(&status("<Idle|MPos:0,0,0|FS:0,0|Ov:100,100,100>"));
+        s.apply(&DeviceEvent::Disconnected {
+            reason: "unplugged".into(),
+        });
+        assert_eq!(s.overrides, None);
+    }
+
+    #[test]
+    fn job_state_and_progress_follow_the_events() {
+        let progress = JobProgress {
+            lines_sent: 10,
+            lines_acked: 4,
+            total: 20,
+        };
+        let mut s = snapshot_after(&[
+            DeviceEvent::JobStateChanged(JobState::Running),
+            DeviceEvent::JobProgress(progress),
+        ]);
+        assert_eq!(s.job, JobState::Running);
+        assert_eq!(s.job_progress, Some(progress));
+        // Unplugging mid-job is a fault, never a pause to resume.
+        s.apply(&DeviceEvent::Disconnected {
+            reason: "unplugged".into(),
+        });
+        assert_eq!(
+            s.job,
+            JobState::Faulted(crate::job::FaultReason::Disconnected("unplugged".into()))
+        );
+        // An idle connection that drops stays idle.
+        let mut s = DeviceSnapshot::default();
+        s.apply(&DeviceEvent::Disconnected {
+            reason: "closed".into(),
+        });
+        assert_eq!(s.job, JobState::Idle);
     }
 
     #[test]

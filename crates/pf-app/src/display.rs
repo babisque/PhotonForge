@@ -1,6 +1,6 @@
 //! Results kept between frames: flattened shape outlines, so the canvas only
-//! maps points to the screen, and the job preview, so toolpaths are planned
-//! once per change instead of once per frame.
+//! maps points to the screen, and the job preview and frame G-code, so
+//! toolpaths are planned once per change instead of once per frame.
 
 use pf_core::{Document, MachineProfile, Polyline, Rect, ShapeId, flatten_path};
 use pf_gcode::{DEFAULT_FLATTEN_TOLERANCE, GcodeError, JobOptions, JobPreview};
@@ -65,6 +65,66 @@ impl PreviewCache {
     /// `None` until the first `sync`.
     pub fn result(&self) -> Option<&Result<JobPreview, GcodeError>> {
         self.result.as_ref()
+    }
+}
+
+/// What a `GcodeCache` holds: the job, or its frame at a laser power.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GcodeTarget {
+    Job,
+    Frame { power_percent: f64 },
+}
+
+/// G-code for one document revision, profile, job options and target, as
+/// lines ready to stream, or why there is none.
+#[derive(Debug, Default)]
+pub struct GcodeCache {
+    key: Option<(u64, MachineProfile, JobOptions, Option<u64>)>,
+    result: Option<Result<Vec<String>, String>>,
+    builds: u32,
+}
+
+impl GcodeCache {
+    pub fn sync(
+        &mut self,
+        doc: &Document,
+        revision: u64,
+        profile: &MachineProfile,
+        options: &JobOptions,
+        target: GcodeTarget,
+    ) {
+        let power_bits = match target {
+            GcodeTarget::Job => None,
+            GcodeTarget::Frame { power_percent } => Some(power_percent.to_bits()),
+        };
+        let key = (revision, profile.clone(), options.clone(), power_bits);
+        if self.key.as_ref() == Some(&key) {
+            return;
+        }
+        let gcode = match target {
+            GcodeTarget::Job => pf_gcode::generate(doc, profile, options),
+            GcodeTarget::Frame { power_percent } => {
+                pf_gcode::generate_frame(doc, profile, options, power_percent)
+            }
+        };
+        self.result = Some(
+            gcode
+                .map(|gcode| gcode.lines().map(str::to_owned).collect())
+                .map_err(|err| crate::panels::preview::describe_gcode_error(&err, doc)),
+        );
+        self.key = Some(key);
+        self.builds += 1;
+    }
+
+    /// `None` until the first `sync`.
+    pub fn result(&self) -> Option<&Result<Vec<String>, String>> {
+        self.result.as_ref()
+    }
+
+    /// How many times the G-code was generated, for tests.
+    #[cfg(test)]
+    pub fn builds(&self) -> u32 {
+        self.builds
     }
 }
 

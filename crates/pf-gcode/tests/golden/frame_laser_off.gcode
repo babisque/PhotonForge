@@ -1,0 +1,9 @@
+; PhotonForge frame
+G21 G90
+M5
+G0 X10 Y5
+G1 X90 Y5 F3000
+G1 X90 Y40
+G1 X10 Y40
+G1 X10 Y5
+M5

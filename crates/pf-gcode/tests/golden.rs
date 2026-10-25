@@ -7,7 +7,7 @@ use pf_core::{
     Document, LayerId, MachineProfile, Point, PolygonShape, PowerMode, RectShape, ShapeKind,
     Transform,
 };
-use pf_gcode::{JobOptions, JobOrigin, generate};
+use pf_gcode::{JobOptions, JobOrigin, generate, generate_frame};
 use support::assert_golden;
 
 fn layer(doc: &mut Document, name: &str, speed: f64, power: f64, passes: u32) -> LayerId {
@@ -137,4 +137,37 @@ fn custom_header_footer() {
         ..JobOptions::default()
     };
     assert_golden("custom_header_footer.gcode", &generate_with(&doc, &options));
+}
+
+#[test]
+fn frame_laser_off() {
+    let mut doc = Document::new();
+    let cut = layer(&mut doc, "Cut", 1200.0, 50.0, 1);
+    rect(&mut doc, cut, 10.0, 10.0, 50.0, 30.0);
+    open_line(&mut doc, cut, Point::new(70.0, 5.0), Point::new(90.0, 25.0));
+    let gcode = generate_frame(
+        &doc,
+        &MachineProfile::default(),
+        &JobOptions::default(),
+        0.0,
+    );
+    assert_golden("frame_laser_off.gcode", &gcode.unwrap());
+}
+
+#[test]
+fn frame_low_power() {
+    let mut doc = Document::new();
+    let cut = layer(&mut doc, "Cut", 1200.0, 50.0, 1);
+    rect(&mut doc, cut, 10.0, 10.0, 50.0, 30.0);
+    let profile = MachineProfile::new(
+        pf_core::Rect::new(Point::ORIGIN, Point::new(300.0, 200.0)),
+        pf_core::Origin::BottomLeft,
+        1000,
+        6000.0,
+        100.0,
+        1.0,
+    )
+    .unwrap();
+    let gcode = generate_frame(&doc, &profile, &JobOptions::default(), 1.0);
+    assert_golden("frame_low_power.gcode", &gcode.unwrap());
 }

@@ -57,6 +57,18 @@ impl Console {
                 let is_status = *request == ReadOnlyRequest::StatusQuery;
                 self.push(Direction::Out, request.label().to_owned(), is_status);
             }
+            DeviceEvent::SentRealtime(command) => {
+                self.push(Direction::Out, command.label().to_owned(), false);
+            }
+            DeviceEvent::SentLine(line) => self.push(Direction::Out, line.clone(), false),
+            DeviceEvent::JobStateChanged(job) => self.note(format!("Job: {job:?}")),
+            DeviceEvent::ControlRejected { control, reasons } => {
+                self.note(format!("{control} refused: {}", reasons.join("; ")));
+            }
+            DeviceEvent::ControlCompleted { control } => self.note(format!("{control} done.")),
+            DeviceEvent::ControlFailed { control, reason } => {
+                self.note(format!("{control} failed: {reason}"));
+            }
             DeviceEvent::ConnectionChanged(ConnectionState::Ready { version }) => {
                 self.note(format!("Connected to GRBL {version}."));
             }
