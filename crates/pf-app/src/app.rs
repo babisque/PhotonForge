@@ -2,13 +2,13 @@
 
 use std::time::Duration;
 
-use egui::{Key, KeyboardShortcut, Modifiers};
+use egui::{Color32, Key, KeyboardShortcut, Modifiers, Pos2, Sense, Stroke, StrokeKind};
 
 use crate::actions;
 use crate::panels::{
     canvas, connection, console, control, import_warnings, layers, machine, preview,
 };
-use crate::state::{AppState, SideTab, StatusLevel};
+use crate::state::{AppState, CanvasTool, SideTab, StatusLevel};
 
 const IMPORT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::I);
 const SAVE_GCODE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::E);
@@ -40,6 +40,25 @@ impl eframe::App for PhotonForgeApp {
         handle_shortcuts(ui, &mut self.state);
         egui::Panel::top("menu_bar").show(ui, |ui| show_menu_bar(ui, &mut self.state));
         egui::Panel::bottom("status_bar").show(ui, |ui| show_status_bar(ui, &mut self.state));
+        egui::Panel::left("tool_bar")
+            .resizable(false)
+            .default_size(46.0)
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    tool_button(ui, &mut self.state, CanvasTool::Select, "Select");
+                    tool_button(ui, &mut self.state, CanvasTool::Rectangle, "Draw rectangle");
+                    tool_button(ui, &mut self.state, CanvasTool::Ellipse, "Draw ellipse");
+                    tool_button(ui, &mut self.state, CanvasTool::Polygon, "Draw hexagon");
+                    tool_button(
+                        ui,
+                        &mut self.state,
+                        CanvasTool::Star,
+                        "Draw five-point star",
+                    );
+                    tool_button(ui, &mut self.state, CanvasTool::Line, "Draw line");
+                    tool_button(ui, &mut self.state, CanvasTool::EditNodes, "Edit nodes");
+                });
+            });
         if self.state.device.show_console {
             egui::Panel::bottom("console")
                 .resizable(true)
@@ -53,6 +72,95 @@ impl eframe::App for PhotonForgeApp {
         egui::CentralPanel::default().show(ui, |ui| canvas::show_canvas(ui, &mut self.state));
         import_warnings::show_import_warnings(ui, &mut self.state);
     }
+}
+
+fn tool_button(ui: &mut egui::Ui, state: &mut AppState, tool: CanvasTool, label: &str) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(34.0, 32.0), Sense::click());
+    let painter = ui.painter();
+    if state.canvas_tool == tool {
+        painter.rect_filled(rect.shrink(1.0), 4.0, ui.visuals().selection.bg_fill);
+    }
+    let color = if state.canvas_tool == tool {
+        Color32::WHITE
+    } else {
+        ui.visuals().text_color()
+    };
+    draw_tool_icon(painter, rect, tool, color);
+    let clicked = response.clicked();
+    response.on_hover_text(label);
+    if clicked {
+        if state.canvas_tool == CanvasTool::Line && tool != CanvasTool::Line {
+            state.line_points.clear();
+            state.interaction = crate::state::Interaction::Idle;
+        }
+        state.canvas_tool = tool;
+        if tool != CanvasTool::EditNodes {
+            state.selected_node = None;
+        }
+    }
+}
+
+fn draw_tool_icon(painter: &egui::Painter, rect: egui::Rect, tool: CanvasTool, color: Color32) {
+    let center = rect.center();
+    let stroke = Stroke::new(1.6, color);
+    let point = |x: f32, y: f32| Pos2::new(center.x + x, center.y + y);
+    match tool {
+        CanvasTool::Select => {
+            let points = [
+                point(-7.0, -9.0),
+                point(-7.0, 8.0),
+                point(-2.0, 4.0),
+                point(1.0, 10.0),
+                point(4.0, 8.5),
+                point(1.0, 3.0),
+                point(7.0, 3.0),
+            ];
+            painter.add(egui::Shape::closed_line(points.to_vec(), stroke));
+        }
+        CanvasTool::Rectangle => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(center, egui::vec2(16.0, 13.0)),
+                0.0,
+                stroke,
+                StrokeKind::Middle,
+            );
+        }
+        CanvasTool::Ellipse => {
+            painter.add(egui::Shape::ellipse_stroke(
+                center,
+                egui::vec2(8.0, 6.5),
+                stroke,
+            ));
+        }
+        CanvasTool::Polygon | CanvasTool::Star => {
+            let star = tool == CanvasTool::Star;
+            let count = if star { 10 } else { 6 };
+            let points = (0..count)
+                .map(|i| {
+                    let angle = -std::f32::consts::FRAC_PI_2
+                        + std::f32::consts::TAU * i as f32 / count as f32;
+                    let radius = if star && i % 2 == 1 { 0.48 } else { 1.0 };
+                    point(8.0 * radius * angle.cos(), 8.0 * radius * angle.sin())
+                })
+                .collect();
+            painter.add(egui::Shape::closed_line(points, stroke));
+        }
+        CanvasTool::Line => {
+            painter.line_segment([point(-8.0, 7.0), point(8.0, -7.0)], stroke);
+        }
+        CanvasTool::EditNodes => {
+            let nodes = [point(-8.0, 5.0), point(0.0, -5.0), point(8.0, 5.0)];
+            painter.add(egui::Shape::line(nodes.to_vec(), stroke));
+            for node in nodes {
+                painter.circle_filled(node, 2.5, ui_icon_node_fill(color));
+                painter.circle_stroke(node, 2.5, stroke);
+            }
+        }
+    }
+}
+
+fn ui_icon_node_fill(color: Color32) -> Color32 {
+    color.gamma_multiply(0.35)
 }
 
 fn show_menu_bar(ui: &mut egui::Ui, state: &mut AppState) {

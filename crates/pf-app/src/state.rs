@@ -26,6 +26,26 @@ pub enum SideTab {
     Device,
 }
 
+/// The active canvas tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CanvasTool {
+    #[default]
+    Select,
+    Rectangle,
+    Ellipse,
+    Polygon,
+    Star,
+    Line,
+    EditNodes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeRef {
+    pub shape_id: ShapeId,
+    pub subpath: usize,
+    pub anchor: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusLevel {
     Info,
@@ -58,6 +78,14 @@ pub enum Interaction {
     Rotate {
         start: Point,
         center: Point,
+    },
+    DrawShape {
+        tool: CanvasTool,
+        start: Point,
+    },
+    MoveNode {
+        node: NodeRef,
+        start: Point,
     },
 }
 
@@ -214,6 +242,10 @@ pub struct AppState {
     /// The layer shown in the layer editor.
     pub selected_layer: Option<LayerId>,
     pub interaction: Interaction,
+    pub canvas_tool: CanvasTool,
+    /// Vertices accumulated by the click-to-draw line tool.
+    pub line_points: Vec<Point>,
+    pub selected_node: Option<NodeRef>,
     /// An arrow-key nudge is in progress; its steps merge into one undo step.
     pub nudging: bool,
     /// Fit the work area into the canvas on the next frame.
@@ -248,6 +280,9 @@ impl AppState {
             selection: Vec::new(),
             selected_layer: None,
             interaction: Interaction::Idle,
+            canvas_tool: CanvasTool::Select,
+            line_points: Vec::new(),
+            selected_node: None,
             nudging: false,
             needs_fit: true,
             cursor_mm: None,

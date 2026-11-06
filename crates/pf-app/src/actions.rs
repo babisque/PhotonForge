@@ -8,7 +8,8 @@ use std::thread;
 use std::time::Instant;
 
 use pf_core::{
-    Command, Document, LayerId, MachineProfile, Shape, ShapeId, Transform, is_inside_work_area,
+    Command, Document, LayerId, MachineProfile, Shape, ShapeId, ShapeKind, Transform,
+    is_inside_work_area,
 };
 use pf_device::{
     ConnectOptions, ControlRequest, DeviceEvent, JobKind, JobRequest, ReadOnlyRequest,
@@ -236,6 +237,49 @@ pub fn apply(state: &mut AppState, command: Command) {
 /// `History::seal` is called.
 pub fn apply_merged(state: &mut AppState, command: Command) {
     record(state, command, true);
+}
+
+/// Adds a shape to the selected layer, falling back to the first layer. If
+/// the document has no layers, history creates the default cut layer too.
+pub fn create_shape(state: &mut AppState, kind: ShapeKind, transform: Transform) {
+    let layer = state
+        .selected_layer
+        .filter(|id| state.document.layer(*id).is_some())
+        .or_else(|| state.document.layers().first().map(|layer| layer.id));
+    let index = state.document.shapes().len();
+    if let Err(err) = state.history.apply(
+        &mut state.document,
+        Command::CreateShape {
+            kind,
+            transform,
+            layer,
+        },
+    ) {
+        state.set_status(StatusLevel::Error, format!("Could not create shape: {err}"));
+        return;
+    }
+    if let Some(shape) = state.document.shapes().get(index) {
+        state.selection = vec![shape.id];
+        state.selected_layer = Some(shape.layer_id);
+        state.set_status(StatusLevel::Info, "Shape created");
+    }
+}
+
+/// Replaces a shape's geometry as one undoable edit.
+pub fn set_shape_geometry(
+    state: &mut AppState,
+    id: ShapeId,
+    kind: ShapeKind,
+    transform: Transform,
+) {
+    apply(
+        state,
+        Command::SetShapeGeometry {
+            id,
+            kind,
+            transform,
+        },
+    );
 }
 
 fn record(state: &mut AppState, command: Command, merged: bool) {

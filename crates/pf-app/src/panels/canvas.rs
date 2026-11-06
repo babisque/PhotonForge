@@ -2,15 +2,16 @@ use std::collections::{HashMap, HashSet};
 
 use egui::{Color32, CursorIcon, Painter, PointerButton, Pos2, Sense, Stroke};
 use pf_core::{
-    Handle, LayerId, MarqueeMode, Point, Rect, ShapeId, Transform, Vec2, Viewport, grid_step,
-    handle_position, hit_handle, move_delta, pick_shape, rotate_delta, scale_delta,
-    selection_bounds, shapes_in_rect,
+    EllipseShape, Handle, LayerId, MarqueeMode, Path, Point, PolygonShape, Rect, RectShape,
+    Segment, ShapeId, ShapeKind, SubPath, Transform, Vec2, Viewport, grid_step, handle_position,
+    hit_handle, move_delta, pick_shape, rotate_delta, scale_delta, selection_bounds,
+    shapes_in_rect,
 };
 
 use pf_gcode::GcodeError;
 
 use crate::actions;
-use crate::state::{AppState, Interaction};
+use crate::state::{AppState, CanvasTool, Interaction, NodeRef};
 
 const FIT_MARGIN_PX: f64 = 24.0;
 const MIN_GRID_PX: f64 = 10.0;
@@ -24,6 +25,7 @@ const ORIGIN_MARK_PX: f32 = 12.0;
 const PICK_TOLERANCE_PX: f64 = 5.0;
 const HANDLE_SIZE_PX: f32 = 7.0;
 const HANDLE_HIT_PX: f64 = 6.0;
+const LINE_CLOSE_SNAP_PX: f64 = 10.0;
 /// Distance (px) of the rotate knob above the selection.
 const ROTATE_OFFSET_PX: f64 = 22.0;
 const NUDGE_MM: f64 = 1.0;
@@ -81,6 +83,9 @@ pub fn show_canvas(ui: &mut egui::Ui, state: &mut AppState) {
     painter.rect_filled(response.rect, 0.0, OUTSIDE_COLOR);
     draw_bed(&painter, state, screen);
     draw_shapes(&painter, state, screen, preview);
+    draw_shape_preview(&painter, state, pointer, shift);
+    draw_node_preview(&painter, state, pointer);
+    draw_node_handles(&painter, state);
     if state.show_preview {
         draw_toolpaths(&painter, state);
     }
@@ -129,10 +134,43 @@ fn handle_tool_input(ui: &egui::Ui, response: &egui::Response, state: &mut AppSt
     let world = |pos: Pos2| vp.to_world(to_point(pos));
     let shift = ui.input(|i| i.modifiers.shift);
 
+    if state.canvas_tool == CanvasTool::Line {
+        if response.clicked_by(PointerButton::Primary)
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let point = world(pos);
+            if state.line_points.is_empty() {
+                state.line_points.push(point);
+            } else if should_close_line(state, point) {
+                finish_line(state, true);
+                state.interaction = Interaction::Idle;
+                return;
+            } else if let Some(&last) = state.line_points.last()
+                && last.distance(point) > 0.0
+            {
+                state.line_points.push(constrain_line(last, point, shift));
+            }
+            if let Some(&last) = state.line_points.last() {
+                state.interaction = Interaction::DrawShape {
+                    tool: CanvasTool::Line,
+                    start: last,
+                };
+            }
+        }
+        return;
+    }
+
     if response.drag_started_by(PointerButton::Primary)
         && let Some(press) = ui.input(|i| i.pointer.press_origin())
     {
-        state.interaction = begin_drag(state, world(press), shift);
+        state.interaction = match state.canvas_tool {
+            CanvasTool::Select => begin_drag(state, world(press), shift),
+            CanvasTool::EditNodes => begin_node_drag(state, world(press)),
+            tool => Interaction::DrawShape {
+                tool,
+                start: world(press),
+            },
+        };
     }
     if response.drag_stopped_by(PointerButton::Primary) {
         match ui.input(|i| i.pointer.latest_pos()) {
@@ -143,7 +181,11 @@ fn handle_tool_input(ui: &egui::Ui, response: &egui::Response, state: &mut AppSt
     if response.clicked_by(PointerButton::Primary)
         && let Some(pos) = response.interact_pointer_pos()
     {
-        click_select(state, world(pos), shift);
+        match state.canvas_tool {
+            CanvasTool::Select => click_select(state, world(pos), shift),
+            CanvasTool::EditNodes => select_node_at(state, world(pos)),
+            _ => {}
+        }
     }
 }
 
@@ -152,8 +194,20 @@ fn handle_keys(ui: &egui::Ui, state: &mut AppState) {
         return;
     }
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if matches!(
+            state.interaction,
+            Interaction::DrawShape {
+                tool: CanvasTool::Line,
+                ..
+            }
+        ) {
+            finish_line(state, false);
+            state.interaction = Interaction::Idle;
+            return;
+        }
         if state.interaction == Interaction::Idle {
             state.selection.clear();
+            state.selected_node = None;
         } else {
             state.interaction = Interaction::Idle;
         }
@@ -238,22 +292,286 @@ fn begin_drag(state: &mut AppState, press: Point, shift: bool) -> Interaction {
     }
 }
 
-fn finish_drag(state: &mut AppState, end: Point, shift: bool) {
-    let interaction = std::mem::take(&mut state.interaction);
-    if let Interaction::Marquee { start } = interaction {
-        let mode = marquee_mode(start, end);
-        let found = shapes_in_rect(&state.document, Rect::new(start, end), mode);
-        if shift {
-            add_unique(&mut state.selection, found);
-        } else {
-            state.selection = found;
+fn begin_node_drag(state: &mut AppState, press: Point) -> Interaction {
+    let Some(node) = nearest_editable_node(state, press) else {
+        if let Some(id) = pick_shape(
+            &state.document,
+            press,
+            PICK_TOLERANCE_PX / state.viewport.zoom(),
+        ) {
+            state.selection = vec![id];
         }
-    } else if let Some(delta) = drag_delta(&interaction, end, shift) {
-        actions::transform_selection(state, delta, false);
+        state.selected_node = None;
+        return Interaction::Idle;
+    };
+    state.selection = vec![node.shape_id];
+    state.selected_node = Some(node);
+    Interaction::MoveNode { node, start: press }
+}
+
+fn select_node_at(state: &mut AppState, at: Point) {
+    if let Some(node) = nearest_editable_node(state, at) {
+        state.selection = vec![node.shape_id];
+        state.selected_node = Some(node);
+    } else {
+        state.selected_node = None;
+        if let Some(id) = pick_shape(
+            &state.document,
+            at,
+            PICK_TOLERANCE_PX / state.viewport.zoom(),
+        ) {
+            state.selection = vec![id];
+        } else {
+            state.selection.clear();
+        }
     }
 }
 
+fn nearest_editable_node(state: &AppState, at: Point) -> Option<NodeRef> {
+    let tolerance = HANDLE_HIT_PX / state.viewport.zoom();
+    let selected: HashSet<ShapeId> = state.selection.iter().copied().collect();
+    let mut closest: Option<(NodeRef, f64)> = None;
+    for shape in state
+        .document
+        .shapes()
+        .iter()
+        .filter(|shape| selected.is_empty() || selected.contains(&shape.id))
+    {
+        let path = editable_path(&shape.world_path());
+        for (subpath_index, subpath) in path.subpaths().iter().enumerate() {
+            for (anchor, point) in editable_anchors(subpath) {
+                let distance = point.distance(at);
+                if distance <= tolerance
+                    && closest.map_or(true, |(_, closest_distance)| distance < closest_distance)
+                {
+                    closest = Some((
+                        NodeRef {
+                            shape_id: shape.id,
+                            subpath: subpath_index,
+                            anchor,
+                        },
+                        distance,
+                    ));
+                }
+            }
+        }
+    }
+    closest.map(|(node, _)| node)
+}
+
+fn editable_anchors(subpath: &SubPath) -> Vec<(usize, Point)> {
+    let segments = subpath.segments();
+    let mut anchors = Vec::new();
+    let count = if subpath.is_closed() {
+        segments.len()
+    } else {
+        segments.len() + 1
+    };
+    for anchor in 0..count {
+        let current = if anchor < segments.len() {
+            Some(anchor)
+        } else {
+            None
+        };
+        let previous = if anchor > 0 {
+            Some(anchor - 1)
+        } else if subpath.is_closed() {
+            Some(segments.len() - 1)
+        } else {
+            None
+        };
+        let editable = current.map_or(true, |i| !matches!(segments[i], Segment::Arc { .. }))
+            && previous.map_or(true, |i| !matches!(segments[i], Segment::Arc { .. }));
+        if editable {
+            let point = current
+                .map(|i| segments[i].start())
+                .or_else(|| previous.map(|i| segments[i].end()));
+            if let Some(point) = point {
+                anchors.push((anchor, point));
+            }
+        }
+    }
+    anchors
+}
+
+/// Converts elliptical arcs to quarter-turn-or-smaller cubic Béziers so their
+/// endpoints can be edited like other path nodes.
+fn editable_path(path: &Path) -> Path {
+    let subpaths = path
+        .subpaths()
+        .iter()
+        .map(|subpath| {
+            let segments = subpath
+                .segments()
+                .iter()
+                .flat_map(|segment| match *segment {
+                    Segment::Arc {
+                        center,
+                        radii,
+                        x_rotation,
+                        start_angle,
+                        sweep_angle,
+                    } => arc_as_cubics(center, radii, x_rotation, start_angle, sweep_angle),
+                    other => vec![other],
+                })
+                .collect();
+            SubPath::new(segments, subpath.is_closed()).unwrap_or_else(|_| subpath.clone())
+        })
+        .collect();
+    Path::new(subpaths)
+}
+
+fn arc_as_cubics(
+    center: Point,
+    radii: Vec2,
+    x_rotation: f64,
+    start_angle: f64,
+    sweep_angle: f64,
+) -> Vec<Segment> {
+    let quarter_turn = std::f64::consts::FRAC_PI_2;
+    let piece_count = (sweep_angle.abs() / quarter_turn).ceil().max(1.0) as usize;
+    let step = sweep_angle / piece_count as f64;
+    let (cos_rotation, sin_rotation) = (x_rotation.cos(), x_rotation.sin());
+    let point_at = |angle: f64| {
+        let (cos_angle, sin_angle) = (angle.cos(), angle.sin());
+        Point::new(
+            center.x + cos_rotation * radii.x * cos_angle - sin_rotation * radii.y * sin_angle,
+            center.y + sin_rotation * radii.x * cos_angle + cos_rotation * radii.y * sin_angle,
+        )
+    };
+    let derivative_at = |angle: f64| {
+        let (cos_angle, sin_angle) = (angle.cos(), angle.sin());
+        Vec2::new(
+            -cos_rotation * radii.x * sin_angle - sin_rotation * radii.y * cos_angle,
+            -sin_rotation * radii.x * sin_angle + cos_rotation * radii.y * cos_angle,
+        )
+    };
+    (0..piece_count)
+        .map(|index| {
+            let angle0 = start_angle + step * index as f64;
+            let angle1 = angle0 + step;
+            let from = point_at(angle0);
+            let to = point_at(angle1);
+            let scale = 4.0 / 3.0 * (step / 4.0).tan();
+            let tangent0 = derivative_at(angle0);
+            let tangent1 = derivative_at(angle1);
+            Segment::CubicBezier {
+                from,
+                ctrl1: Point::new(from.x + tangent0.x * scale, from.y + tangent0.y * scale),
+                ctrl2: Point::new(to.x - tangent1.x * scale, to.y - tangent1.y * scale),
+                to,
+            }
+        })
+        .collect()
+}
+
+fn finish_drag(state: &mut AppState, end: Point, shift: bool) {
+    let interaction = std::mem::take(&mut state.interaction);
+    match interaction {
+        Interaction::DrawShape { tool, start } => {
+            if tool == CanvasTool::Line {
+                let _ = (start, end, shift);
+            } else {
+                let bounds = shape_bounds(start, end, shift);
+                if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+                    return;
+                }
+                let (kind, transform) = match tool {
+                    CanvasTool::Rectangle => (
+                        RectShape::new(bounds.width(), bounds.height(), 0.0).map(ShapeKind::Rect),
+                        Transform::translate(bounds.min.x, bounds.min.y),
+                    ),
+                    CanvasTool::Ellipse => (
+                        EllipseShape::new(bounds.width() / 2.0, bounds.height() / 2.0)
+                            .map(ShapeKind::Ellipse),
+                        Transform::translate(bounds.center().x, bounds.center().y),
+                    ),
+                    CanvasTool::Polygon => (
+                        regular_polygon(bounds, 6, false).map(ShapeKind::Polygon),
+                        Transform::identity(),
+                    ),
+                    CanvasTool::Star => (
+                        regular_polygon(bounds, 5, true).map(ShapeKind::Polygon),
+                        Transform::identity(),
+                    ),
+                    CanvasTool::Select | CanvasTool::EditNodes | CanvasTool::Line => return,
+                };
+                match kind {
+                    Ok(kind) => actions::create_shape(state, kind, transform),
+                    Err(err) => state.set_status(
+                        crate::state::StatusLevel::Error,
+                        format!("Could not create shape: {err}"),
+                    ),
+                }
+            }
+        }
+        Interaction::MoveNode { node, start } => {
+            let delta = move_delta(start, end);
+            if !delta.is_identity() {
+                if let Some(shape) = state.document.shape(node.shape_id) {
+                    if let Some(path) = move_path_anchor(
+                        &editable_path(&shape.world_path()),
+                        node.subpath,
+                        node.anchor,
+                        Vec2::new(delta.e, delta.f),
+                    ) {
+                        actions::set_shape_geometry(
+                            state,
+                            node.shape_id,
+                            ShapeKind::Path(path),
+                            Transform::identity(),
+                        );
+                    }
+                }
+            }
+            state.selected_node = Some(node);
+        }
+        Interaction::Marquee { start } => {
+            let mode = marquee_mode(start, end);
+            let found = shapes_in_rect(&state.document, Rect::new(start, end), mode);
+            if shift {
+                add_unique(&mut state.selection, found);
+            } else {
+                state.selection = found;
+            }
+        }
+        _ => {
+            if let Some(delta) = drag_delta(&interaction, end, shift) {
+                actions::transform_selection(state, delta, false);
+            }
+        }
+    }
+}
+
+fn finish_line(state: &mut AppState, closed: bool) {
+    let points = std::mem::take(&mut state.line_points);
+    let min_points = if closed { 3 } else { 2 };
+    if points.len() < min_points {
+        return;
+    }
+    match PolygonShape::new(points, closed) {
+        Ok(line) => actions::create_shape(state, ShapeKind::Polygon(line), Transform::identity()),
+        Err(err) => state.set_status(
+            crate::state::StatusLevel::Error,
+            format!("Could not create line: {err}"),
+        ),
+    }
+}
+
+fn should_close_line(state: &AppState, pointer: Point) -> bool {
+    if state.line_points.len() < 3 {
+        return false;
+    }
+    let start = state.line_points[0];
+    state
+        .viewport
+        .to_screen(start)
+        .distance(state.viewport.to_screen(pointer))
+        <= LINE_CLOSE_SNAP_PX
+}
+
 fn click_select(state: &mut AppState, at: Point, shift: bool) {
+    state.selected_node = None;
     let zoom = state.viewport.zoom();
     match pick_shape(&state.document, at, PICK_TOLERANCE_PX / zoom) {
         Some(id) if shift => {
@@ -272,7 +590,12 @@ fn click_select(state: &mut AppState, at: Point, shift: bool) {
 /// The transform a drag would apply if released at `pointer` (mm).
 fn drag_delta(interaction: &Interaction, pointer: Point, shift: bool) -> Option<Transform> {
     let delta = match *interaction {
-        Interaction::Idle | Interaction::Marquee { .. } => return None,
+        Interaction::Idle
+        | Interaction::Marquee { .. }
+        | Interaction::DrawShape { .. }
+        | Interaction::MoveNode { .. } => {
+            return None;
+        }
         Interaction::Move { start } => move_delta(start, pointer),
         Interaction::Scale {
             handle,
@@ -304,6 +627,8 @@ fn add_unique(selection: &mut Vec<ShapeId>, ids: Vec<ShapeId>) {
 
 fn cursor_for(state: &AppState, hover_px: Option<Point>) -> Option<CursorIcon> {
     match state.interaction {
+        Interaction::DrawShape { .. } => return Some(CursorIcon::Crosshair),
+        Interaction::MoveNode { .. } => return Some(CursorIcon::Grabbing),
         Interaction::Move { .. } => return Some(CursorIcon::Grabbing),
         Interaction::Rotate { .. } => return Some(CursorIcon::Grabbing),
         Interaction::Scale { handle, .. } => return Some(resize_cursor(handle)),
@@ -319,6 +644,314 @@ fn cursor_for(state: &AppState, hover_px: Option<Point>) -> Option<CursorIcon> {
         None if bounds.contains_point(at) => Some(CursorIcon::Move),
         None => None,
     }
+}
+
+fn shape_bounds(start: Point, end: Point, constrain: bool) -> Rect {
+    let end = if constrain {
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        let side = dx.abs().max(dy.abs());
+        Point::new(start.x + side.copysign(dx), start.y + side.copysign(dy))
+    } else {
+        end
+    };
+    Rect::new(start, end)
+}
+
+fn constrain_line(start: Point, end: Point, constrain: bool) -> Point {
+    if !constrain {
+        return end;
+    }
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    let length = dx.hypot(dy);
+    if length == 0.0 {
+        return end;
+    }
+    let step = std::f64::consts::FRAC_PI_4;
+    let angle = (dy.atan2(dx) / step).round() * step;
+    Point::new(
+        start.x + length * angle.cos(),
+        start.y + length * angle.sin(),
+    )
+}
+
+fn draw_shape_preview(
+    painter: &Painter,
+    state: &AppState,
+    pointer: Option<Point>,
+    constrain: bool,
+) {
+    if state.canvas_tool == CanvasTool::Line {
+        let mut points: Vec<Pos2> = state
+            .line_points
+            .iter()
+            .map(|&point| to_pos(state.viewport.to_screen(point)))
+            .collect();
+        if let (Some(&last), Some(end)) = (state.line_points.last(), pointer) {
+            let close = should_close_line(state, end);
+            let end = if close {
+                state.line_points[0]
+            } else {
+                constrain_line(last, end, constrain)
+            };
+            points.push(to_pos(state.viewport.to_screen(end)));
+            if close {
+                painter.circle_stroke(
+                    to_pos(state.viewport.to_screen(state.line_points[0])),
+                    LINE_CLOSE_SNAP_PX as f32,
+                    Stroke::new(1.5, CROSSING_COLOR),
+                );
+            }
+        }
+        if points.len() >= 2 {
+            painter.add(egui::Shape::line(points, Stroke::new(1.5, SELECTION_COLOR)));
+        }
+        return;
+    }
+    let (Interaction::DrawShape { tool, start }, Some(end)) = (state.interaction, pointer) else {
+        return;
+    };
+    let stroke = Stroke::new(1.5, SELECTION_COLOR);
+    let bounds = shape_bounds(start, end, constrain);
+    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+        return;
+    }
+    let viewport = &state.viewport;
+    let frame = egui::Rect::from_two_pos(
+        to_pos(viewport.to_screen(Point::new(bounds.min.x, bounds.max.y))),
+        to_pos(viewport.to_screen(Point::new(bounds.max.x, bounds.min.y))),
+    );
+    match tool {
+        CanvasTool::Rectangle => {
+            painter.rect_stroke(frame, 0.0, stroke, egui::StrokeKind::Middle);
+        }
+        CanvasTool::Ellipse => {
+            let points = radial_points(frame.center(), frame.size() / 2.0, 64, None);
+            painter.add(egui::Shape::closed_line(points, stroke));
+        }
+        CanvasTool::Polygon => {
+            let points = radial_points(frame.center(), frame.size() / 2.0, 6, None);
+            painter.add(egui::Shape::closed_line(points, stroke));
+        }
+        CanvasTool::Star => {
+            let points = radial_points(frame.center(), frame.size() / 2.0, 10, Some(0.5));
+            painter.add(egui::Shape::closed_line(points, stroke));
+        }
+        CanvasTool::Select | CanvasTool::Line | CanvasTool::EditNodes => {}
+    }
+}
+
+fn draw_node_preview(painter: &Painter, state: &AppState, pointer: Option<Point>) {
+    let (Interaction::MoveNode { node, start }, Some(pointer)) = (state.interaction, pointer)
+    else {
+        return;
+    };
+    let Some(shape) = state.document.shape(node.shape_id) else {
+        return;
+    };
+    let delta = Vec2::new(pointer.x - start.x, pointer.y - start.y);
+    let Some(path) = move_path_anchor(
+        &editable_path(&shape.world_path()),
+        node.subpath,
+        node.anchor,
+        delta,
+    ) else {
+        return;
+    };
+    let Ok(polylines) = pf_core::flatten_path(&path, 0.25) else {
+        return;
+    };
+    let vp = &state.viewport;
+    for polyline in polylines {
+        let points: Vec<Pos2> = polyline
+            .points
+            .iter()
+            .map(|&point| to_pos(vp.to_screen(point)))
+            .collect();
+        if polyline.closed {
+            painter.add(egui::Shape::closed_line(
+                points,
+                Stroke::new(1.5, SELECTION_COLOR),
+            ));
+        } else {
+            painter.add(egui::Shape::line(points, Stroke::new(1.5, SELECTION_COLOR)));
+        }
+    }
+}
+
+fn draw_node_handles(painter: &Painter, state: &AppState) {
+    if state.canvas_tool != CanvasTool::EditNodes {
+        return;
+    }
+    let selected: HashSet<ShapeId> = state.selection.iter().copied().collect();
+    for shape in state
+        .document
+        .shapes()
+        .iter()
+        .filter(|shape| selected.contains(&shape.id))
+    {
+        let path = editable_path(&shape.world_path());
+        for (subpath_index, subpath) in path.subpaths().iter().enumerate() {
+            for (anchor, point) in editable_anchors(subpath) {
+                let node = NodeRef {
+                    shape_id: shape.id,
+                    subpath: subpath_index,
+                    anchor,
+                };
+                let center = to_pos(state.viewport.to_screen(point));
+                let fill = if state.selected_node == Some(node) {
+                    SELECTION_COLOR
+                } else {
+                    Color32::WHITE
+                };
+                painter.circle(center, 4.0, fill, Stroke::new(1.0, SELECTION_COLOR));
+            }
+        }
+    }
+}
+
+fn move_path_anchor(path: &Path, subpath_index: usize, anchor: usize, delta: Vec2) -> Option<Path> {
+    let mut subpaths = path.subpaths().to_vec();
+    let subpath = subpaths.get_mut(subpath_index)?;
+    let count = subpath.segments().len();
+    let anchor_count = count + if subpath.is_closed() { 0 } else { 1 };
+    if count == 0 || anchor >= anchor_count {
+        return None;
+    }
+    let segments = subpath.segments().to_vec();
+    let current = (anchor < count).then_some(anchor);
+    let previous = if anchor > 0 {
+        Some(anchor - 1)
+    } else if subpath.is_closed() {
+        Some(count - 1)
+    } else {
+        None
+    };
+    if current.is_some_and(|i| matches!(segments[i], Segment::Arc { .. }))
+        || previous.is_some_and(|i| matches!(segments[i], Segment::Arc { .. }))
+    {
+        return None;
+    }
+    let offset = |point: Point| Point::new(point.x + delta.x, point.y + delta.y);
+    let mut updated = segments;
+    if current.is_some() && current == previous {
+        set_segment_both(&mut updated[current?], offset);
+    } else {
+        if let Some(index) = current {
+            set_segment_start(&mut updated[index], offset);
+        }
+        if let Some(index) = previous {
+            set_segment_end(&mut updated[index], offset);
+        }
+    }
+    let closed = subpath.is_closed();
+    *subpath = SubPath::new(updated, closed).ok()?;
+    Some(Path::new(subpaths))
+}
+
+fn set_segment_both(segment: &mut Segment, offset: impl Fn(Point) -> Point) {
+    match segment {
+        Segment::Line { from, to } => {
+            *from = offset(*from);
+            *to = offset(*to);
+        }
+        Segment::QuadBezier { from, ctrl, to } => {
+            *from = offset(*from);
+            *ctrl = offset(*ctrl);
+            *to = offset(*to);
+        }
+        Segment::CubicBezier {
+            from,
+            ctrl1,
+            ctrl2,
+            to,
+        } => {
+            *from = offset(*from);
+            *ctrl1 = offset(*ctrl1);
+            *ctrl2 = offset(*ctrl2);
+            *to = offset(*to);
+        }
+        Segment::Arc { .. } => {}
+    }
+}
+
+fn set_segment_start(segment: &mut Segment, offset: impl Fn(Point) -> Point) {
+    match segment {
+        Segment::Line { from, .. } => *from = offset(*from),
+        Segment::QuadBezier { from, ctrl, .. } => {
+            *from = offset(*from);
+            *ctrl = offset(*ctrl);
+        }
+        Segment::CubicBezier { from, ctrl1, .. } => {
+            *from = offset(*from);
+            *ctrl1 = offset(*ctrl1);
+        }
+        Segment::Arc { .. } => {}
+    }
+}
+
+fn set_segment_end(segment: &mut Segment, offset: impl Fn(Point) -> Point) {
+    match segment {
+        Segment::Line { to, .. } => *to = offset(*to),
+        Segment::QuadBezier { ctrl, to, .. } => {
+            *ctrl = offset(*ctrl);
+            *to = offset(*to);
+        }
+        Segment::CubicBezier { ctrl2, to, .. } => {
+            *ctrl2 = offset(*ctrl2);
+            *to = offset(*to);
+        }
+        Segment::Arc { .. } => {}
+    }
+}
+
+fn regular_polygon(
+    bounds: Rect,
+    points: u32,
+    star: bool,
+) -> Result<PolygonShape, pf_core::ShapeError> {
+    let vertex_count = if star {
+        points as usize * 2
+    } else {
+        points as usize
+    };
+    let points = (0..vertex_count)
+        .map(|index| {
+            let angle = -std::f64::consts::FRAC_PI_2
+                + std::f64::consts::TAU * index as f64 / vertex_count as f64;
+            let radius = if star && index % 2 == 1 { 0.5 } else { 1.0 };
+            Point::new(
+                bounds.center().x + bounds.width() / 2.0 * radius * angle.cos(),
+                bounds.center().y + bounds.height() / 2.0 * radius * angle.sin(),
+            )
+        })
+        .collect();
+    PolygonShape::new(points, true)
+}
+
+fn radial_points(
+    center: Pos2,
+    radius: egui::Vec2,
+    vertices: usize,
+    inner_radius: Option<f32>,
+) -> Vec<Pos2> {
+    (0..vertices)
+        .map(|index| {
+            let angle = -std::f32::consts::FRAC_PI_2
+                + std::f32::consts::TAU * index as f32 / vertices as f32;
+            let scale = if index % 2 == 1 {
+                inner_radius.unwrap_or(1.0)
+            } else {
+                1.0
+            };
+            center
+                + egui::vec2(
+                    radius.x * scale * angle.cos(),
+                    radius.y * scale * angle.sin(),
+                )
+        })
+        .collect()
 }
 
 fn resize_cursor(handle: Handle) -> CursorIcon {
@@ -602,6 +1235,60 @@ mod tests {
 
     fn p(x: f64, y: f64) -> Point {
         Point::new(x, y)
+    }
+
+    #[test]
+    fn rectangle_tool_creates_a_shape_and_undo_removes_it() {
+        let mut state = AppState::new();
+        state.canvas_tool = CanvasTool::Rectangle;
+        state.interaction = Interaction::DrawShape {
+            tool: CanvasTool::Rectangle,
+            start: p(20.0, 30.0),
+        };
+        finish_drag(&mut state, p(10.0, 12.0), false);
+
+        assert_eq!(state.document.shapes().len(), 1);
+        assert_eq!(state.document.layers().len(), 1);
+        assert_eq!(state.selection, vec![state.document.shapes()[0].id]);
+        assert!(
+            state.document.shapes()[0]
+                .bounds()
+                .unwrap()
+                .approx_eq(&Rect::new(p(10.0, 12.0), p(20.0, 30.0)), 1e-9)
+        );
+        assert_eq!(state.history.undo_label(), Some("Draw shape"));
+
+        actions::undo(&mut state);
+        assert!(state.document.shapes().is_empty());
+        assert!(state.document.layers().is_empty());
+    }
+
+    #[test]
+    fn ellipse_tool_uses_selected_layer_and_shift_constrains_to_circle() {
+        let (mut state, _, _) = state_with_squares();
+        let layer = state.document.layers()[0].id;
+        state.selected_layer = Some(layer);
+        state.canvas_tool = CanvasTool::Ellipse;
+        state.interaction = Interaction::DrawShape {
+            tool: CanvasTool::Ellipse,
+            start: p(5.0, 10.0),
+        };
+        finish_drag(&mut state, p(15.0, 20.0), true);
+
+        let shape = &state.document.shapes()[2];
+        assert_eq!(shape.layer_id, layer);
+        assert!(matches!(
+            shape.kind,
+            ShapeKind::Ellipse(ellipse)
+                if (ellipse.rx() - 5.0).abs() < 1e-9 && (ellipse.ry() - 5.0).abs() < 1e-9
+        ));
+        assert!(
+            shape
+                .bounds()
+                .unwrap()
+                .approx_eq(&Rect::new(p(5.0, 10.0), p(15.0, 20.0)), 1e-9)
+        );
+        assert_eq!(state.selection, vec![shape.id]);
     }
 
     fn translation(state: &AppState, id: ShapeId) -> (f64, f64) {

@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use crate::document::{Document, DocumentError};
 use crate::layer::{Layer, LayerId, LayerMode, PowerMode};
-use crate::shape::{Shape, ShapeId};
+use crate::shape::{Shape, ShapeId, ShapeKind};
 use crate::transform::Transform;
 
 /// Older entries are dropped beyond this many undo steps.
@@ -33,6 +33,19 @@ pub enum Command {
     /// layer joins the first existing layer with the same color and mode,
     /// or is appended as a new layer.
     ImportDocument(Document),
+    /// Adds one new shape to an existing layer, or creates the default layer
+    /// when the document has none.
+    CreateShape {
+        kind: ShapeKind,
+        transform: Transform,
+        layer: Option<LayerId>,
+    },
+    /// Replaces a shape's path representation and transform, preserving ID and layer.
+    SetShapeGeometry {
+        id: ShapeId,
+        kind: ShapeKind,
+        transform: Transform,
+    },
     /// New transforms for existing shapes.
     SetTransforms(Vec<(ShapeId, Transform)>),
     DeleteShapes(Vec<ShapeId>),
@@ -79,6 +92,8 @@ impl Command {
     pub fn label(&self) -> &'static str {
         match self {
             Command::ImportDocument(_) => "Import",
+            Command::CreateShape { .. } => "Draw shape",
+            Command::SetShapeGeometry { .. } => "Edit node",
             Command::SetTransforms(_) => "Transform",
             Command::DeleteShapes(_) => "Delete",
             Command::AssignShapes { .. } => "Assign to layer",
@@ -139,6 +154,13 @@ enum Change {
         from: usize,
         to: usize,
     },
+    Geometry {
+        id: ShapeId,
+        before_kind: ShapeKind,
+        before_transform: Transform,
+        after_kind: ShapeKind,
+        after_transform: Transform,
+    },
 }
 
 impl Change {
@@ -174,6 +196,19 @@ impl Change {
                 id: *id,
                 from: *to,
                 to: *from,
+            },
+            Change::Geometry {
+                id,
+                before_kind,
+                before_transform,
+                after_kind,
+                after_transform,
+            } => Change::Geometry {
+                id: *id,
+                before_kind: after_kind.clone(),
+                before_transform: *after_transform,
+                after_kind: before_kind.clone(),
+                after_transform: *before_transform,
             },
         }
     }
@@ -341,6 +376,26 @@ impl History {
 fn plan(doc: &Document, command: Command) -> Result<Change, HistoryError> {
     let change = match command {
         Command::ImportDocument(imported) => plan_import(doc, &imported)?,
+        Command::CreateShape {
+            kind,
+            transform,
+            layer,
+        } => plan_create_shape(doc, kind, transform, layer)?,
+        Command::SetShapeGeometry {
+            id,
+            kind,
+            transform,
+        } => {
+            let index = shape_index(doc);
+            let before = lookup(doc, &index, id)?;
+            Change::Geometry {
+                id,
+                before_kind: before.kind.clone(),
+                before_transform: before.transform,
+                after_kind: kind,
+                after_transform: transform,
+            }
+        }
         Command::SetTransforms(items) => {
             let index = shape_index(doc);
             let mut planned = Vec::with_capacity(items.len());
@@ -395,6 +450,46 @@ fn plan(doc: &Document, command: Command) -> Result<Change, HistoryError> {
         }
     };
     Ok(change)
+}
+
+fn plan_create_shape(
+    doc: &Document,
+    kind: ShapeKind,
+    transform: Transform,
+    requested_layer: Option<LayerId>,
+) -> Result<Change, HistoryError> {
+    let mut layers = Vec::new();
+    let layer_id = match requested_layer {
+        Some(id) if doc.layer(id).is_some() => id,
+        Some(id) => return Err(DocumentError::UnknownLayer(id).into()),
+        None => match doc.layers().first() {
+            Some(layer) => layer.id,
+            None => {
+                let id = LayerId(doc.next_layer_id());
+                doc.next_layer_id()
+                    .checked_add(1)
+                    .ok_or(DocumentError::IdsExhausted("layer"))?;
+                layers.push((doc.layers().len(), Layer::new(id, "Cut", [0, 0, 0])));
+                id
+            }
+        },
+    };
+    let id = ShapeId(doc.next_shape_id());
+    doc.next_shape_id()
+        .checked_add(1)
+        .ok_or(DocumentError::IdsExhausted("shape"))?;
+    Ok(Change::Insert {
+        layers,
+        shapes: vec![(
+            doc.shapes().len(),
+            Shape {
+                id,
+                kind,
+                transform,
+                layer_id,
+            },
+        )],
+    })
 }
 
 fn plan_import(doc: &Document, imported: &Document) -> Result<Change, HistoryError> {
@@ -569,6 +664,28 @@ fn perform(doc: &mut Document, change: &Change) -> Result<(), HistoryError> {
             }
             doc.move_layer(*id, *to)?;
         }
+        Change::Geometry {
+            id,
+            before_kind,
+            before_transform,
+            after_kind,
+            after_transform,
+        } => {
+            let index = shape_index(doc);
+            let Some(&position) = index.get(id) else {
+                return Err(HistoryError::OutOfSync);
+            };
+            let Some(shape) = doc.shapes().get(position) else {
+                return Err(HistoryError::OutOfSync);
+            };
+            if shape.kind != *before_kind || shape.transform != *before_transform {
+                return Err(HistoryError::OutOfSync);
+            }
+            if let Some(shape) = doc.shape_at_mut(position) {
+                shape.kind = after_kind.clone();
+                shape.transform = *after_transform;
+            }
+        }
     }
     Ok(())
 }
@@ -605,6 +722,60 @@ mod tests {
 
     fn rect() -> ShapeKind {
         ShapeKind::Rect(RectShape::new(10.0, 5.0, 0.0).unwrap())
+    }
+
+    #[test]
+    fn create_shape_uses_existing_layer_and_is_undoable() {
+        let mut doc = Document::new();
+        let layer = doc.add_layer("Engrave", [20, 30, 40]).unwrap();
+        let mut history = History::new();
+        history
+            .apply(
+                &mut doc,
+                Command::CreateShape {
+                    kind: rect(),
+                    transform: Transform::translate(3.0, 4.0),
+                    layer: Some(layer),
+                },
+            )
+            .unwrap();
+        assert_eq!(doc.layers().len(), 1);
+        assert_eq!(doc.shapes().len(), 1);
+        assert_eq!(doc.shapes()[0].layer_id, layer);
+        assert_eq!(history.undo_label(), Some("Draw shape"));
+
+        history.undo(&mut doc).unwrap();
+        assert!(doc.shapes().is_empty());
+        assert_eq!(doc.layers().len(), 1);
+        history.redo(&mut doc).unwrap();
+        assert_eq!(doc.shapes().len(), 1);
+        assert_eq!(doc.shapes()[0].layer_id, layer);
+    }
+
+    #[test]
+    fn create_shape_adds_and_undoes_the_default_layer_together() {
+        let mut doc = Document::new();
+        let mut history = History::new();
+        history
+            .apply(
+                &mut doc,
+                Command::CreateShape {
+                    kind: rect(),
+                    transform: Transform::identity(),
+                    layer: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(doc.layers().len(), 1);
+        assert_eq!(doc.layers()[0].name, "Cut");
+        assert_eq!(doc.shapes().len(), 1);
+
+        history.undo(&mut doc).unwrap();
+        assert!(doc.layers().is_empty());
+        assert!(doc.shapes().is_empty());
+        history.redo(&mut doc).unwrap();
+        assert_eq!(doc.layers().len(), 1);
+        assert_eq!(doc.shapes().len(), 1);
     }
 
     /// Two layers (red, blue) with two shapes on red and one on blue.
